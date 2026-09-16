@@ -41,6 +41,9 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// The shipped demo model is listed under this reserved name (see server.py).
+const DEMO_MODEL_NAME = "Demo model (simulated data)";
+
 // Display names for the package's model identifiers (values sent to the server are unchanged).
 const MODEL_INFO = {
   KAN_gaps:             { name: "KAN-CNQ",       desc: "Spline network, non-crossing" },
@@ -122,6 +125,7 @@ async function init() {
   // state.healthMsg instead of failing silently.
   $("file-input").addEventListener("change", onUpload);
   $("use-sample").addEventListener("click", useSample);
+  $("use-demo").addEventListener("click", useDemoTrain);
   // Drag-over styling for every dropzone (train upload, predict model, predict data).
   document.querySelectorAll(".dropzone").forEach((dz) => {
     ["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, () => dz.classList.add("is-over")));
@@ -210,6 +214,33 @@ async function useSample() {
   } catch (e) {
     status.classList.add("is-error");
     status.textContent = "Could not load sample data: " + e.message;
+  }
+}
+
+// Load the demo training data and pre-fill the mapping (time / event / ID / unit).
+async function useDemoTrain() {
+  const status = $("upload-status");
+  if (!state.ready) { blockedMsg(status); return; }
+  status.classList.remove("is-error");
+  status.textContent = "Loading demo training data…";
+  try {
+    const res = await fetch("/api/demo/train");
+    if (!res.ok) throw new Error((await res.text()) || res.statusText);
+    const blob = await res.blob();
+    await handleFile(new File([blob], "demo_train.csv", { type: "text/csv" }));
+    // Pre-fill the known demo mapping on top of the server's guess.
+    const setIf = (id, val) => {
+      if ([...$(id).options].some((o) => o.value === val)) $(id).value = val;
+    };
+    setIf("duration-col", "time");
+    setIf("event-col", "event");
+    setIf("id-col", "subject_id");
+    $("time-unit").value = "months";
+    state.timeUnit = "months";
+    onMappingSelectChange();  // drop id/dur/event from features and re-validate
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Could not load demo data: " + e.message;
   }
 }
 
@@ -826,6 +857,11 @@ function initPredict() {
     $(id).addEventListener("change", schedulePredictValidate));
   $("p-run-btn").addEventListener("click", onPredictRun);
   $("p-cancel-btn").addEventListener("click", onPredictCancel);
+  $("p-demo-rebuild-btn").addEventListener("click", onDemoRebuild);
+  $("p-demo-subjects").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-demo]");
+    if (btn) loadDemoSubjects(btn.dataset.demo);
+  });
 }
 
 async function loadSavedModels() {
@@ -857,8 +893,21 @@ function onPredictModelSelect() {
   state.predictSummary = m;
   status.textContent = "";
   renderModelSummary(m);
-  $("p-delete-model").classList.remove("hidden");  // only saved models can be deleted
-  onModelChosen();
+  const isDemo = !!(m && m.is_demo);
+  $("p-delete-model").classList.toggle("hidden", isDemo);  // demo can't be deleted
+  $("p-demo-rebuild").classList.toggle("hidden", !isDemo);
+  if (isDemo && m.needs_rebuild) {
+    // The committed bundle can't load here (e.g. torch mismatch) — offer rebuild,
+    // and don't advance until it succeeds.
+    $("p-demo-rebuild-msg").textContent = "Demo model needs rebuilding" +
+      (m.error ? ` (${m.error})` : "") + ".";
+    $("p-demo-rebuild-msg").classList.add("is-error");
+    $("p-step-data").classList.add("hidden");
+  } else {
+    $("p-demo-rebuild-msg").textContent = "This is the simulated demo model.";
+    $("p-demo-rebuild-msg").classList.remove("is-error");
+    onModelChosen();
+  }
 }
 
 async function onDeleteModel() {
@@ -902,6 +951,7 @@ async function onPredictModelUpload(ev) {
     status.textContent = `Loaded ${file.name}.`;
     $("p-model-select").value = "";                 // it's an uploaded bundle, not a saved one
     $("p-delete-model").classList.add("hidden");    // delete only applies to saved models
+    $("p-demo-rebuild").classList.add("hidden");
     renderModelSummary(res.summary);
     onModelChosen();
   } catch (e) {
@@ -923,7 +973,8 @@ function renderModelSummary(m) {
     ["Saved", m.created_at || "—"],
     ["deepcnq", m.deepcnq || "—"],
   ];
-  box.innerHTML = "<table>" + rows.map(([l, v]) =>
+  const badge = m.is_demo ? `<span class="badge badge-demo">demo · simulated data</span>` : "";
+  box.innerHTML = badge + "<table>" + rows.map(([l, v]) =>
     `<tr><td class="lbl">${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("") + "</table>";
   box.classList.remove("hidden");
 }
@@ -932,6 +983,69 @@ function renderModelSummary(m) {
 function onModelChosen() {
   $("p-step-data").classList.remove("hidden");
   if (state.predictCsvPath) { buildPredictMapping(); schedulePredictValidate(); }
+}
+
+// Load one of the demo new-subject files (already on the server) into the flow.
+async function loadDemoSubjects(key) {
+  const status = $("p-upload-status");
+  if (!state.ready) { blockedMsg(status); return; }
+  if (!state.predictModel) {
+    status.classList.add("is-error");
+    status.textContent = "Choose a model first.";
+    return;
+  }
+  status.classList.remove("is-error");
+  status.textContent = "Loading demo subjects…";
+  try {
+    const info = await api("/api/demo/data?name=" + encodeURIComponent(key));
+    state.predictCsvPath = info.csv_path;
+    state.predictColumns = info.columns;
+    status.textContent = `${info.description} (${info.n_rows.toLocaleString()} rows).`;
+    fillTable($("p-preview-table"), info.preview.columns, info.preview.rows);
+    $("p-preview-wrap").classList.remove("hidden");
+    buildPredictMapping();
+    if (info.has_outcomes) {
+      if (info.time_col) $("p-time-col").value = info.time_col;
+      if (info.event_col) $("p-event-col").value = info.event_col;
+      $("p-external-block").open = true;   // reveal external-validation mapping
+    }
+    $("p-step-map").classList.remove("hidden");
+    $("p-step-run").classList.remove("hidden");
+    schedulePredictValidate();
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Could not load demo subjects: " + e.message;
+  }
+}
+
+// Rebuild the demo bundle (retrains from demo_train.csv) when it can't load here.
+async function onDemoRebuild() {
+  const msg = $("p-demo-rebuild-msg");
+  $("p-demo-rebuild-btn").disabled = true;
+  try {
+    const res = await api("/api/demo/rebuild", { method: "POST" });
+    pollJob(res.job_id, {
+      onProgress: (s) => renderProgress("p-demo-rebuild-progress", "p-demo-rebuild-step",
+        "p-demo-rebuild-fill", "p-demo-rebuild-detail", s),
+      onDone: async () => {
+        $("p-demo-rebuild-btn").disabled = false;
+        await loadSavedModels();
+        $("p-model-select").value = DEMO_MODEL_NAME;
+        onPredictModelSelect();
+        msg.textContent = "Demo model rebuilt.";
+        msg.classList.remove("is-error");
+      },
+      onError: (e) => {
+        $("p-demo-rebuild-btn").disabled = false;
+        msg.textContent = "Rebuild failed: " + e;
+        msg.classList.add("is-error");
+      },
+    });
+  } catch (e) {
+    $("p-demo-rebuild-btn").disabled = false;
+    msg.textContent = "Rebuild failed: " + e.message;
+    msg.classList.add("is-error");
+  }
 }
 
 async function onPredictDataUpload(ev) {
@@ -1090,6 +1204,7 @@ async function onPredictRun() {
         $("p-run-btn").disabled = false;
         $("p-cancel-btn").classList.add("hidden");
         $("p-run-error").textContent = "Failed: " + e;
+        maybeOfferDemoRebuild(e);
       },
       onCancelled: () => {
         $("p-run-btn").disabled = false;
@@ -1105,6 +1220,16 @@ async function onPredictCancel() {
   if (!state.predictJobId) return;
   await api("/api/cancel?id=" + state.predictJobId, { method: "POST" });
   $("p-progress-step").textContent = "Cancelling…";
+}
+
+// If a predict run failed because the demo bundle couldn't load, offer a rebuild.
+function maybeOfferDemoRebuild(err) {
+  const isDemo = state.predictModel && state.predictModel.name === DEMO_MODEL_NAME;
+  if (isDemo && /bundle|weights|could not read|load|architecture|corrupt/i.test(String(err))) {
+    $("p-demo-rebuild").classList.remove("hidden");
+    $("p-demo-rebuild-msg").textContent = "Demo model needs rebuilding (" + err + ").";
+    $("p-demo-rebuild-msg").classList.add("is-error");
+  }
 }
 
 async function showPredictResults() {

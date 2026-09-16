@@ -26,6 +26,8 @@ SAMPLE_DATA = HERE / "sample_data" / "sample.csv"  # app-local
 REQUIREMENTS = HERE / "requirements.txt"           # the app's OWN requirements
 OUTPUT_DIR = HERE / "jobs"                          # all run outputs live here
 MODELS_DIR = HERE / "models"                        # saved .cnqmodel bundles live here
+DEMO_DIR = HERE / "demo"                             # simulated demo data + model
+DEMO_MODEL = DEMO_DIR / "demo_model.cnqmodel"        # the shipped demo bundle
 
 # Markers a directory must contain to count as a valid deepcnq checkout.
 _MARKER_PKG = Path("src") / "deepquantreg" / "__init__.py"

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="/style.css?v=4">
+  <link rel="stylesheet" href="/style.css?v=5">
 </head>
 <body>
 <header class="masthead">
@@ -44,7 +44,8 @@
   <section class="card step" id="step-data">
     <h2><span class="num">1</span> Upload data</h2>
     <p class="lead">One CSV with a follow-up time, an event indicator and numeric covariates.
-      No data? <button type="button" id="use-sample" class="linklike">Use the sample data</button>,
+      No data? <button type="button" id="use-demo" class="linklike">Use demo training data</button>,
+      <button type="button" id="use-sample" class="linklike">use the sample data</button>,
       <a href="/api/sample" download>download it</a> or
       <a href="/api/template" download>download a template CSV</a>.</p>
     <label class="dropzone" for="file-input">
@@ -275,6 +276,16 @@ S002,36.0,0,64,1.2,0</pre>
     </label>
     <p id="p-model-status" class="status"></p>
     <div id="p-model-summary" class="model-summary hidden"></div>
+    <div id="p-demo-rebuild" class="subpanel hidden">
+      <p id="p-demo-rebuild-msg" class="status">This is the simulated demo model.</p>
+      <button type="button" id="p-demo-rebuild-btn" class="btn-outline">Rebuild demo model</button>
+      <div id="p-demo-rebuild-progress" class="progress hidden" aria-live="polite">
+        <div class="progress-head"><span class="spinner" aria-hidden="true"></span>
+          <span id="p-demo-rebuild-step">Rebuilding</span></div>
+        <div class="bar"><div id="p-demo-rebuild-fill"></div></div>
+        <div id="p-demo-rebuild-detail" class="progress-detail"></div>
+      </div>
+    </div>
   </section>
 
   <!-- P2: upload new subjects -->
@@ -287,6 +298,12 @@ S002,36.0,0,64,1.2,0</pre>
       <span class="dz-title">Choose a CSV file</span>
       <span class="dz-hint">or drag it here</span>
     </label>
+    <p class="field-label">Or use demo new subjects <span class="muted">simulated</span></p>
+    <div class="demo-choices" id="p-demo-subjects">
+      <button type="button" class="btn-outline" data-demo="new">20 new patients (no outcomes)</button>
+      <button type="button" class="btn-outline" data-demo="outcomes">500 with outcomes (validation)</button>
+      <button type="button" class="btn-outline" data-demo="shifted">500 shifted population</button>
+    </div>
     <p id="p-upload-status" class="status"></p>
     <div id="p-preview-wrap" class="hidden">
       <h3>Preview</h3>
@@ -361,6 +378,6 @@ S002,36.0,0,64,1.2,0</pre>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js?v=4"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

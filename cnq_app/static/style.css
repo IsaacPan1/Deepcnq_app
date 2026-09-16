@@ -474,7 +474,7 @@ iframe#report-frame, iframe#p-report-frame {
 }
 
 /* Progress bars for the predict + save widgets share the training bar's look */
-#p-bar-fill, #save-bar-fill {
+#p-bar-fill, #save-bar-fill, #p-demo-rebuild-fill {
   height: 100%;
   width: 0;
   border-radius: inherit;
@@ -506,6 +506,15 @@ iframe#report-frame, iframe#p-report-frame {
 
 #p-feature-map .grid-custom { margin-top: .3rem; }
 #p-feature-map label { margin: .5rem 0 .25rem; }
+
+.demo-choices { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .3rem; }
+.demo-choices button { font-size: .86rem; padding: .45rem .9rem; }
+.badge {
+  display: inline-block; padding: .1rem .5rem; margin-bottom: .4rem;
+  font-size: .72rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+  border-radius: 999px;
+}
+.badge-demo { color: #6a4e05; background: #fdf6e3; border: 1px solid #f0dfa8; }
 
 .foot {
   max-width: 980px;

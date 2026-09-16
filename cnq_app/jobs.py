@@ -200,6 +200,8 @@ class JobManager:
                 self._execute_save(job)
             elif job.kind == "predict":
                 self._execute_predict(job)
+            elif job.kind == "demo":
+                self._execute_demo(job)
             else:
                 self._execute(job)
             if job.cancel_event.is_set():
@@ -634,6 +636,36 @@ class JobManager:
         job._override = 0.9
         artifacts = predict_report.build(job.dir, bundle, result, cfg)
         job.results = {"kind": "predict", **artifacts}
+
+    # ----------------------------------------------------------------- demo rebuild
+    def _execute_demo(self, job: Job):
+        """Retrain the shipped demo model from demo/demo_train.csv (progress like a
+        normal refit). Used when the committed bundle can't load in this env."""
+        import pandas as pd
+        import make_demo
+        import model_io
+
+        train_csv = paths.DEMO_DIR / "demo_train.csv"
+        if not train_csv.exists():
+            raise RuntimeError("demo_train.csv is missing; regenerate the demo data")
+        model_name = job.config.get("model") or make_demo.DEFAULT_MODEL
+        epochs = int(job.config.get("epochs") or make_demo.DEMO_CUSTOM["maximum_epochs"])
+        job.n_models, job.n_splits, job.total_units = 1, 1, 1
+        job.current_model, job.current_split = model_name, 1
+        job.max_epochs = epochs
+        job.epoch = 0
+        job.phase = "train"
+        job.step = "Rebuilding the demo model"
+        train = pd.read_csv(train_csv)
+        job._counting = True
+        try:
+            info = make_demo.train_model(paths.DEMO_DIR, train, model_name=model_name,
+                                         epochs=epochs, deterministic=True)
+        finally:
+            job._counting = False
+        meta = model_io.read_meta(info["path"])
+        job.results = {"kind": "demo", "summary": model_io.summarize(meta),
+                       "size_mb": info["size_mb"], "seconds": info["seconds"]}
 
 
 def _safe_name(name: str) -> str:
