@@ -818,6 +818,7 @@ async function onSave() {
 // ===========================================================================
 function initPredict() {
   $("p-refresh-models").addEventListener("click", loadSavedModels);
+  $("p-delete-model").addEventListener("click", onDeleteModel);
   $("p-model-select").addEventListener("change", onPredictModelSelect);
   $("p-model-file").addEventListener("change", onPredictModelUpload);
   $("p-file-input").addEventListener("change", onPredictDataUpload);
@@ -846,13 +847,40 @@ function onPredictModelSelect() {
   const name = $("p-model-select").value;
   const status = $("p-model-status");
   status.classList.remove("is-error");
-  if (!name) { $("p-model-summary").classList.add("hidden"); return; }
+  if (!name) {
+    $("p-model-summary").classList.add("hidden");
+    $("p-delete-model").classList.add("hidden");
+    return;
+  }
   const m = state.predictModels.find((x) => x.name === name);
   state.predictModel = { name };
   state.predictSummary = m;
   status.textContent = "";
   renderModelSummary(m);
+  $("p-delete-model").classList.remove("hidden");  // only saved models can be deleted
   onModelChosen();
+}
+
+async function onDeleteModel() {
+  const name = state.predictModel && state.predictModel.name;
+  if (!name) return;
+  if (!confirm(`Delete ${name}? This can't be undone.`)) return;
+  const status = $("p-model-status");
+  try {
+    await api("/api/models?name=" + encodeURIComponent(name), { method: "DELETE" });
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Delete failed: " + e.message;
+    return;
+  }
+  state.predictModel = null;
+  state.predictSummary = null;
+  $("p-model-summary").classList.add("hidden");
+  $("p-delete-model").classList.add("hidden");
+  status.classList.remove("is-error");
+  status.textContent = `Deleted ${name}.`;
+  await loadSavedModels();
+  $("p-model-select").value = "";
 }
 
 async function onPredictModelUpload(ev) {
@@ -872,6 +900,8 @@ async function onPredictModelUpload(ev) {
     state.predictModel = { path: res.model_path };
     state.predictSummary = res.summary;
     status.textContent = `Loaded ${file.name}.`;
+    $("p-model-select").value = "";                 // it's an uploaded bundle, not a saved one
+    $("p-delete-model").classList.add("hidden");    // delete only applies to saved models
     renderModelSummary(res.summary);
     onModelChosen();
   } catch (e) {

@@ -89,7 +89,11 @@ place to count epochs and to abort a fit when the user cancels.
 Everything the app writes stays under `cnq_app/`:
 
 - `.venv/` — the launcher's virtual environment
-- `jobs/` — per-run output directories, plus `jobs/uploads/` for uploaded CSVs
+- `jobs/` — per-run output directories (train / save / predict), plus
+  `jobs/uploads/` for uploaded CSVs and models. Each training run also writes an
+  `artifacts/` subfolder (per-split weights + scalers) so it can be saved later.
+  Pruned to the most recent `CNQ_KEEP_RUNS` runs (default 20).
+- `models/` — saved `.cnqmodel` bundles (never pruned)
 - `sample_data/` — the bundled sample dataset
 - `__pycache__/`, `.pytest_cache/` — caches
 
@@ -191,6 +195,124 @@ the extreme-levels warning; the server rebuilds the grid authoritatively in
 - full-grid per-subject predictions (original-scale times) are written to
   `predictions/<model>.csv` inside the results zip.
 
+## Saving models & prediction (`model_io.py`, `save_model.py`, `predict.py`, `predict_report.py`)
+
+A trained model can be bundled as a `.cnqmodel` file and reused to predict on new
+subjects. Saving and prediction run through the same `JobManager` as training
+(the job's `kind` is `save` or `predict`), so they get progress and cancellation
+for free; a refit and external validation can be slow, prediction itself is fast.
+
+### Bundle format (`.cnqmodel`)
+
+A `.cnqmodel` is a plain **zip** with three members:
+
+| Member | Contents |
+|--------|----------|
+| `weights.pt` | `torch.save` of a **list of state_dicts** — one per ensemble member (length 1 for a final / single-split model). Tensors only. |
+| `model.json` | all non-weight metadata (see below). |
+| `manifest.json` | `{"algorithm": "sha256", "files": {"model.json": …, "weights.pt": …}}` — the SHA-256 of the other two members. |
+
+`model.json` records everything needed to rebuild the model and reproduce
+predictions: `format_version`, the model name and the exact **`build_args`**
+passed to `deepquantreg.build_model`, the ordered `feature_names`, the training
+`scaler` (mean/scale) and `member_scalers`, the `quantiles`, the `log_time`
+convention (`exp` inverse), the `bundle` type + member count, per-feature
+`feature_ranges` (training min/max, for out-of-range flags), `missing_handling`,
+training size/events/censoring, the `event_mapping`, training `metrics`, the
+`deepcnq` version, library `versions`, `device`, `seed` and `created_at`.
+
+`save_bundle(path, state_dicts, meta)` fills the auto fields (`format_version`,
+`log_time`, `versions`, `created_at`), hashes the members and writes them into a
+temp file it then renames into place (never a half-written bundle).
+`load_bundle(path)` verifies both hashes and the format version, loads the
+weights, rebuilds each member with `build_model(build_args)` and
+`load_state_dict(strict=True)`, and returns rebuilt models + meta + warnings.
+`read_meta(path)` returns just the verified `model.json` **without importing
+torch**, so listing saved models (`GET /api/models`) stays light.
+
+### Why `weights_only` + JSON, not pickle
+
+Weights load with `torch.load(..., weights_only=True, map_location="cpu")`.
+`weights_only=True` refuses to unpickle arbitrary Python objects, so opening a
+bundle can only ever materialise tensors — a `.cnqmodel` someone emailed you
+can't execute code on load. That is only safe because the bundle stores **no
+Python objects**: all metadata is plain JSON and the weights are pure tensors.
+Nothing is pickled, so there's no class/version coupling between the saving and
+loading environments beyond what `build_args` + `build_model` reconstruct.
+
+### Versioning and compatibility
+
+`FORMAT_VERSION` (an int) gates the layout. A bundle whose `format_version` is
+**newer** than the app is refused with a clear error; older is accepted. Hash
+mismatches, a non-zip file, or missing members all raise `BundleError` with a
+plain message. Two differences are **warnings, not errors** (returned on the
+`LoadedBundle`): a different deepcnq commit, or a different torch version, than
+the bundle was saved with — predictions should still match but may drift if model
+code changed.
+
+### Per-member scalers (ensembles)
+
+Each repeated split is standardised with **its own** training `StandardScaler`
+(fit on that split's train rows), so an ensemble member only produces correct
+outputs when fed data scaled by *its* scaler. Bundles therefore store
+`member_scalers` (one per member) alongside a top-level `scaler` (member 0, for
+display). `predict.ensemble_predict_log` standardises the raw features with each
+member's scaler in turn, then averages predictions **on the log scale**. Because
+every `_gaps` model emits non-decreasing log-quantiles, the mean of those
+sequences is also non-decreasing — the ensemble stays non-crossing without any
+re-sorting. Final and single-split bundles simply carry one scaler / one member.
+
+### How a run enables saving
+
+To bundle the *exact* in-session weights (so saved predictions match to 1e-6),
+each training run persists per-split artifacts under its job dir
+(`artifacts/weights/<model>__<split>.pt`, `artifacts/scalers.json`,
+`artifacts/feature_ranges.json`, `artifacts/context.json`,
+`artifacts/training.json`). A `save` job reads those to build **single-split** or
+**ensemble** bundles without retraining; a **final** bundle instead refits on all
+rows via `pipeline.prepare_all` (a single train/valid split; 15% held out for
+early stopping) in `save_model.refit_final`.
+
+### Prediction validation & outputs
+
+`predict.validate` mirrors the numeric rules in `validation.py` but is anchored
+to the bundle's required feature set: missing features and fully non-numeric
+feature columns are **errors**; rows with a missing feature value are **excluded,
+never imputed** (a warning); subjects with any feature outside the training range
+are flagged (`out_of_range`) with per-feature counts. `predict.run_prediction`
+writes the predictions frame (`q_<τ>`, `median`, 80% interval + width,
+`out_of_range`); when time/event columns are given, `external_validation`
+computes IPCW pinball, 50/80% coverage, Uno C and per-τ calibration with a
+Kaplan–Meier censoring estimate **from the new data**, plus a KM-vs-mean-predicted
+survival curve. `predict_report.build` renders the plots, the self-contained HTML
+report and a results zip (predictions CSV, figures, report, and a copy of
+`model.json`).
+
+### Model + predict API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/models` | list saved bundles (`read_meta` each; torch-free) |
+| `GET /api/models/download?name=` | download a saved `.cnqmodel` |
+| `DELETE /api/models?name=` | delete a saved bundle |
+| `POST /api/save` | start a `save` job `{source_job_id, model, bundle_type, split_index?, name}` |
+| `POST /api/predict/upload-model` | store an uploaded `.cnqmodel`, return its summary |
+| `POST /api/predict/upload-data` | store an uploaded CSV, return preview + columns |
+| `POST /api/predict/validate` | validate a mapping against a bundle |
+| `POST /api/predict/run` | start a `predict` job |
+| `GET /api/predictions?id=` | download a predict job's `predictions.csv` |
+
+Saved bundles live in `cnq_app/models/` (`paths.MODELS_DIR`); bundle names are
+sanitised (`model_io.safe_name`) to a path-safe form. Predict jobs reuse the
+existing `/api/report` and `/api/zip` job-download routes.
+
+### Job folder cleanup (`CNQ_KEEP_RUNS`)
+
+After every job the manager prunes `jobs/` to the most recent **`CNQ_KEEP_RUNS`**
+run folders (default 20; `0` or negative disables it). Only 12-char hex job ids
+are considered — `jobs/uploads/` and anything else is left alone. Saved
+`.cnqmodel` bundles live outside `jobs/`, so they are never touched by pruning.
+
 ## Tests
 
 ```bash
@@ -205,7 +327,15 @@ cancellation. `tests/test_validation.py` covers every data-validation rule with
 small synthetic frames plus an API flow that uploads a messy CSV (1/2 event
 coding, a text column, blank cells), checks the messages, fixes the mapping and
 completes a run. Both use the repo's smoke config (`configs/smoke/simulated.yaml`)
-and the bundled sample data.
+and the bundled sample data. `tests/test_model_io.py` covers the bundle
+round-trip and every corruption/incompatibility path (tampered hash, bad zip,
+future `format_version`, weights/architecture mismatch). `tests/test_predict.py`
+trains tiny models on the sample data and checks that each saved bundle type
+(single split, ensemble, refit) reloads and predicts identically to the
+in-session model (within 1e-6), that predictions are invariant to CSV column
+order, that a single row matches the same row inside a batch, that ensembles stay
+non-crossing, that missing-feature / text-in-feature mappings error, and that
+external validation runs.
 
 ## Building a release
 
@@ -244,7 +374,11 @@ cd deepcnq && git pull
 | `run.bat` / `run.sh` | double-click wrappers that find Python and call `run.py` |
 | `server.py` | `python -m server` entry point; CLI, `/api/health`, static serving, raw-body upload |
 | `jobs.py` | background job manager, progress hook, cancellation, orchestration |
-| `pipeline.py` | data prep (`prepare_real` replica), training, metrics, importance |
+| `pipeline.py` | data prep (`prepare_real` replica), training, metrics, importance; `prepare_all` for refits |
+| `model_io.py` | `.cnqmodel` bundle read/write, hash + version checks, `safe_name` |
+| `save_model.py` | assemble bundles from a run; refit-on-all-data for final models |
+| `predict.py` | prediction: validation, per-member scaling, ensemble averaging, external validation |
+| `predict_report.py` | prediction plots, HTML report and results zip |
 | `validation.py` | data-spec checks (errors/warnings/summary) used by upload, validate and run |
 | `presets.py` | resolve hyper-parameters from `cnq.yaml`; preset labels + closest-cohort suggestion |
 | `grids.py` | quantile-grid generation (kinds, rounding, required levels, standard subset) |
@@ -258,3 +392,5 @@ cd deepcnq && git pull
 | `tests/test_smoke.py` | end-to-end + API + quantile-validation + cancellation tests |
 | `tests/test_validation.py` | per-rule data-validation tests + a messy-CSV API flow |
 | `tests/test_grids.py` | quantile-grid generation, preset suggestion, and a 5%-grid smoke run |
+| `tests/test_model_io.py` | bundle round-trip + corruption/incompatibility handling |
+| `tests/test_predict.py` | save→reload→predict parity, column-order/scaling invariance, ensembles, errors, external validation |

@@ -100,3 +100,66 @@ the model predicts. The default (0.1, 0.25, 0.5, 0.75, 0.9) is a good start;
 or above 0.95) rely on few events and can be unreliable. With a dense grid the
 tables still show the five standard levels (plus the average over the whole
 grid), and the report adds individual survival curves.
+
+## Save a model and predict new subjects
+
+Once you have trained a model you can **save** it and reuse it later to predict
+survival-time quantiles for new subjects — no retraining needed.
+
+### Save a model
+
+After a run finishes, use the **Save a model** panel on the results:
+
+1. Choose which trained **model** to save.
+2. Choose **what to save**:
+   - **Final model: refit on all data** — retrains the chosen model on *every*
+     row (holding out 15% for early stopping). This is usually what you want for
+     a model you'll reuse. Training runs again, with a progress bar.
+   - **Ensemble of the repeated-split models** — keeps every repeated split's
+     model and averages their predictions. Only useful if you trained with more
+     than one repeated split.
+   - **Single split** — saves one split's model.
+3. Give it a **name** and click **Save model**. You get a `.cnqmodel` file to
+   download, and the model now appears in the **Predict** tab.
+
+> Only the most recent **20** training runs are kept on disk (the
+> `CNQ_KEEP_RUNS` setting). Save any model you want to keep — its run folder may
+> be cleaned up automatically once older runs pile up. A saved `.cnqmodel` is
+> self-contained and is **not** affected by that cleanup.
+
+### Predict new subjects
+
+Switch to the **Predict** tab:
+
+1. **Choose a model** — pick one of your saved models (its summary is shown), or
+   upload a `.cnqmodel` file.
+2. **Upload new subjects** — a CSV containing the model's feature columns.
+3. **Map columns** — feature columns are auto-matched by name; every training
+   feature is required. Optionally choose a subject **ID** column, and — only if
+   your new subjects have *known* outcomes — a **time** and **event** column for
+   external validation.
+4. **Run** the prediction. You get a results table and downloads for the
+   **predictions CSV**, an **HTML report** (plots), and a **zip** of everything.
+
+The predictions CSV has, per subject: each quantile `q_<τ>`, the `median`, the
+80% interval (`interval80_low`/`high`/`width`) and an `out_of_range` flag.
+
+### What the predictions mean (and don't)
+
+- **Between-subject spread, not model uncertainty.** The quantile interval for a
+  subject describes how survival time *varies between similar subjects* at those
+  covariate values. It is **not** the model's own uncertainty about its
+  parameters — that isn't quantified here. A narrow interval means similar
+  subjects tend to have similar outcomes, not that the model is "confident".
+- **Population shift.** Predictions assume the new subjects come from a
+  population *similar to the training data*. If the new cohort differs (different
+  hospital, era, inclusion criteria), all predictions can be off — even ones that
+  look in-range.
+- **Out-of-range flags.** A subject whose feature values fall outside the
+  training range is marked `out_of_range` in the output. Those predictions are
+  **extrapolations** and are less reliable.
+- **External validation needs unseen data.** The optional time/event metrics
+  (IPCW pinball, interval coverage, Uno C-index, calibration) are only meaningful
+  on subjects the model was **not** trained on. They are computed with a
+  censoring estimate from the *new* data and are labelled as external validation
+  in the report — never mix in rows the model already saw.
