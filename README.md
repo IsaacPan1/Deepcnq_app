@@ -135,6 +135,7 @@ More details are in [`cnq_app/README.md`](cnq_app/README.md).
 | "Port 8000 is already in use" | Run `python run.py 8001` (Mac: `python3 run.py 8001`) and open http://127.0.0.1:8001/ |
 | Page looks plain or buttons don't work | Use exactly `http://127.0.0.1:8000/`, then press **Ctrl+Shift+R** (Mac: **Cmd+Shift+R**). |
 | Red banner about missing packages, or installation failed | Check your internet connection, then run `python run.py --reinstall` (Mac: `python3 run.py --reinstall`). |
+| `No Python at ...` (a moved or uninstalled Python) | Delete the `.venv` folder inside `cnq_app` and run `run.py` again — it rebuilds the environment from scratch. |
 
 Still stuck? [Open an issue](https://github.com/IsaacPan1/Deepcnq_app/issues) or contact **Isaac, your-email@unc.edu**.
 
