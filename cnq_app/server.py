@@ -34,18 +34,14 @@ UPLOAD_DIR = paths.OUTPUT_DIR / "uploads"
 MODELS_DIR = paths.MODELS_DIR
 MAX_UPLOAD = 64 * 1024 * 1024  # 64 MB raw-body cap
 
-# The shipped demo model is listed under this reserved name; it lives in demo/
-# (not models/), is registered on startup and cannot be deleted.
+# The demo model is listed under this reserved name; it can't be deleted, and it
+# is generated/built on demand (see demo.py) rather than requiring a terminal.
 DEMO_MODEL_NAME = "Demo model (simulated data)"
-DEMO_TRAIN_CSV = paths.DEMO_DIR / "demo_train.csv"
-# Predict-tab "Use demo new subjects" choices: key -> (file, description, has_outcomes)
-DEMO_SUBJECT_FILES = {
-    "new": ("demo_new_subjects.csv",
-            "20 new patients, no outcomes — includes 2 out-of-range rows and a note column", False),
-    "outcomes": ("demo_new_subjects_with_outcomes.csv",
-                 "500 new patients with known outcomes (same population) — for external validation", True),
-    "shifted": ("demo_shifted_population.csv",
-                "500 patients from a shifted population — watch calibration degrade", True),
+# Predict-tab "Use demo new subjects" choices: key -> (description, has_outcomes)
+DEMO_SUBJECT_INFO = {
+    "new": ("20 new patients, no outcomes — includes 2 out-of-range rows and a note column", False),
+    "outcomes": ("500 new patients with known outcomes (same population) — for external validation", True),
+    "shifted": ("500 patients from a shifted population — watch calibration degrade", True),
 }
 
 # Packages the app needs; import name -> pip name (for the health banner).
@@ -288,9 +284,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_download(query, "results.zip", "application/zip",
                                              "cnq_results.zip")
             if route == "/api/sample":
-                if not SAMPLE_DATA.exists():
-                    return self._error("sample data not found", 404)
-                return self._send_bytes(SAMPLE_DATA.read_bytes(), "text/csv",
+                import demo
+                return self._send_bytes(demo.ensure_sample_data().read_bytes(), "text/csv",
                                         filename="sample_survival.csv")
             if route == "/api/template":
                 return self._send_bytes(TEMPLATE_CSV.encode("utf-8"), "text/csv",
@@ -303,9 +298,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_download(query, "predictions.csv", "text/csv",
                                              "cnq_predictions.csv")
             if route == "/api/demo/train":
-                if not DEMO_TRAIN_CSV.exists():
-                    return self._error("demo data not found; run make_demo.py", 404)
-                return self._send_bytes(DEMO_TRAIN_CSV.read_bytes(), "text/csv",
+                import demo
+                return self._send_bytes(demo.resolve_csv("train").read_bytes(), "text/csv",
                                         filename="demo_train.csv")
             if route == "/api/demo/data":
                 return self._handle_demo_data(query)
@@ -347,8 +341,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_predict_validate()
             if route == "/api/predict/run":
                 return self._handle_predict_run()
-            if route == "/api/demo/rebuild":
-                return self._handle_demo_rebuild()
+            if route == "/api/demo/build":
+                return self._handle_demo_build()
             return self._error("not found", 404)
         except Exception as exc:  # noqa: BLE001
             return self._error(f"{type(exc).__name__}: {exc}", 500)
@@ -473,16 +467,21 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- saved models ----
     def _handle_list_models(self):
+        import demo
         import model_io
         out = []
-        # The demo model (from demo/, registered on startup) is listed first.
-        if paths.DEMO_MODEL.exists():
-            entry = {"name": DEMO_MODEL_NAME, "file": paths.DEMO_MODEL.name, "is_demo": True}
+        # The demo model is always listed first. If it isn't built yet the entry
+        # carries needs_build so the UI can offer a one-click build.
+        entry = {"name": DEMO_MODEL_NAME, "file": demo.MODEL_FILE, "is_demo": True}
+        demo_path = demo.resolve_model()
+        if demo_path is None:
+            entry["needs_build"] = True
+        else:
             try:
-                entry.update(model_io.summarize(model_io.read_meta(paths.DEMO_MODEL)))
+                entry.update(model_io.summarize(model_io.read_meta(demo_path)))
             except Exception as exc:  # noqa: BLE001 - a broken demo bundle needs rebuilding
                 entry.update(needs_rebuild=True, error=str(exc))
-            out.append(entry)
+        out.append(entry)
         if MODELS_DIR.exists():
             for p in sorted(MODELS_DIR.glob("*.cnqmodel")):
                 try:
@@ -493,12 +492,15 @@ class Handler(SimpleHTTPRequestHandler):
         self._send_json({"models": out})
 
     def _handle_model_download(self, query):
+        import demo
         import model_io
         name = _one(query, "name")
         if not name:
             return self._error("model name required")
         if name == DEMO_MODEL_NAME:
-            path = paths.DEMO_MODEL
+            path = demo.resolve_model()
+            if path is None:
+                return self._error("the demo model isn't built yet", 404)
         else:
             path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
         if not path.exists():
@@ -519,22 +521,17 @@ class Handler(SimpleHTTPRequestHandler):
         path.unlink()
         self._send_json({"deleted": True, "name": path.stem})
 
-    # ---- demo new-subject data + model rebuild ----
+    # ---- demo new-subject data + model build ----
     def _handle_demo_data(self, query):
+        import demo
         key = _one(query, "name")
-        entry = DEMO_SUBJECT_FILES.get(key)
-        if not entry:
+        if key not in DEMO_SUBJECT_INFO:
             return self._error("unknown demo file", 404)
-        filename, description, has_outcomes = entry
-        path = paths.DEMO_DIR / filename
-        if not path.exists():
-            return self._error("demo data not found; run make_demo.py", 404)
-        try:
-            info = preview_csv(path)
-        except Exception as exc:  # noqa: BLE001
-            return self._error(f"could not read demo file: {exc}")
+        description, has_outcomes = DEMO_SUBJECT_INFO[key]
+        path = demo.resolve_csv(key)   # generates on the spot if missing
+        info = demo.preview(path)      # torch-free preview
         info["csv_path"] = str(path)
-        info["file_name"] = filename
+        info["file_name"] = demo.CSV_FILES[key]
         info["description"] = description
         info["has_outcomes"] = has_outcomes
         if has_outcomes:
@@ -542,13 +539,16 @@ class Handler(SimpleHTTPRequestHandler):
             info["event_col"] = "event"
         self._send_json(info)
 
-    def _handle_demo_rebuild(self):
+    def _handle_demo_build(self):
+        """Start (or attach to) the demo-model build job."""
         if not self._repo_ready():
             return
-        if not DEMO_TRAIN_CSV.exists():
-            return self._error("demo training data is missing; run make_demo.py", 404)
         manager = _get_manager()
-        if manager.active() is not None:
+        active = manager.active()
+        if active is not None:
+            if active.kind == "demo":
+                # A build is already running — attach to it instead of starting another.
+                return self._send_json({"job_id": active.id, "attached": True, **active.status()})
             return self._error("a job is already running", 409)
         job = manager.start({"kind": "demo"})
         self._send_json({"job_id": job.id, **job.status()})
@@ -619,12 +619,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- predict ----
     def _bundle_path_from_ref(self, ref):
+        import demo
         import model_io
         ref = ref or {}
         if ref.get("path"):
             p = Path(ref["path"])
         elif ref.get("name") == DEMO_MODEL_NAME:
-            p = paths.DEMO_MODEL
+            p = demo.resolve_model()
+            if p is None:
+                raise FileNotFoundError("the demo model isn't built yet")
         elif ref.get("name"):
             p = MODELS_DIR / f"{model_io.safe_name(ref['name'])}.cnqmodel"
         else:

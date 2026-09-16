@@ -857,7 +857,7 @@ function initPredict() {
     $(id).addEventListener("change", schedulePredictValidate));
   $("p-run-btn").addEventListener("click", onPredictRun);
   $("p-cancel-btn").addEventListener("click", onPredictCancel);
-  $("p-demo-rebuild-btn").addEventListener("click", onDemoRebuild);
+  $("p-demo-rebuild-btn").addEventListener("click", onDemoBuild);
   $("p-demo-subjects").addEventListener("click", (ev) => {
     const btn = ev.target.closest("button[data-demo]");
     if (btn) loadDemoSubjects(btn.dataset.demo);
@@ -874,8 +874,12 @@ async function loadSavedModels() {
   sel.innerHTML = "";
   const usable = state.predictModels.filter((m) => !m.error);
   sel.appendChild(new Option(usable.length ? "— choose a saved model —" : "— no saved models yet —", ""));
-  usable.forEach((m) => sel.appendChild(
-    new Option(`${m.name} — ${m.model} (${m.bundle_type})`, m.name)));
+  usable.forEach((m) => {
+    const label = m.is_demo
+      ? m.name + (m.needs_build ? " — not built yet" : "")
+      : `${m.name} — ${m.model} (${m.bundle_type})`;
+    sel.appendChild(new Option(label, m.name));
+  });
   if (previous && usable.some((m) => m.name === previous)) sel.value = previous;
 }
 
@@ -896,16 +900,23 @@ function onPredictModelSelect() {
   const isDemo = !!(m && m.is_demo);
   $("p-delete-model").classList.toggle("hidden", isDemo);  // demo can't be deleted
   $("p-demo-rebuild").classList.toggle("hidden", !isDemo);
-  if (isDemo && m.needs_rebuild) {
-    // The committed bundle can't load here (e.g. torch mismatch) — offer rebuild,
-    // and don't advance until it succeeds.
-    $("p-demo-rebuild-msg").textContent = "Demo model needs rebuilding" +
-      (m.error ? ` (${m.error})` : "") + ".";
-    $("p-demo-rebuild-msg").classList.add("is-error");
+  const needsBuild = isDemo && m.needs_build;
+  const needsRebuild = isDemo && m.needs_rebuild;
+  if (needsBuild || needsRebuild) {
+    // Not built (or can't load here) — offer a one-click build and don't advance
+    // until it succeeds.
+    $("p-demo-rebuild-btn").textContent = needsBuild ? "Build demo model" : "Rebuild demo model";
+    $("p-demo-rebuild-msg").textContent = needsBuild
+      ? "The demo model isn't built yet. Build it now (about 2 minutes)."
+      : "The demo model needs rebuilding" + (m.error ? ` (${m.error})` : "") + ".";
+    $("p-demo-rebuild-msg").classList.toggle("is-error", !!needsRebuild);
     $("p-step-data").classList.add("hidden");
-  } else {
+  } else if (isDemo) {
+    $("p-demo-rebuild-btn").textContent = "Rebuild demo model";
     $("p-demo-rebuild-msg").textContent = "This is the simulated demo model.";
     $("p-demo-rebuild-msg").classList.remove("is-error");
+    onModelChosen();
+  } else {
     onModelChosen();
   }
 }
@@ -1018,12 +1029,15 @@ async function loadDemoSubjects(key) {
   }
 }
 
-// Rebuild the demo bundle (retrains from demo_train.csv) when it can't load here.
-async function onDemoRebuild() {
+// Build (or rebuild) the demo bundle through a job. If a build is already
+// running the server returns that job, so clicking twice just attaches to it.
+async function onDemoBuild() {
   const msg = $("p-demo-rebuild-msg");
   $("p-demo-rebuild-btn").disabled = true;
+  msg.classList.remove("is-error");
+  msg.textContent = "Building the demo model… this takes about 2 minutes.";
   try {
-    const res = await api("/api/demo/rebuild", { method: "POST" });
+    const res = await api("/api/demo/build", { method: "POST" });
     pollJob(res.job_id, {
       onProgress: (s) => renderProgress("p-demo-rebuild-progress", "p-demo-rebuild-step",
         "p-demo-rebuild-fill", "p-demo-rebuild-detail", s),
@@ -1031,19 +1045,24 @@ async function onDemoRebuild() {
         $("p-demo-rebuild-btn").disabled = false;
         await loadSavedModels();
         $("p-model-select").value = DEMO_MODEL_NAME;
-        onPredictModelSelect();
-        msg.textContent = "Demo model rebuilt.";
+        onPredictModelSelect();          // now built → reveals the data step
+        msg.textContent = "Demo model ready.";
         msg.classList.remove("is-error");
+        $("p-demo-rebuild").classList.add("hidden");
       },
       onError: (e) => {
         $("p-demo-rebuild-btn").disabled = false;
-        msg.textContent = "Rebuild failed: " + e;
+        msg.textContent = "Build failed: " + e;
         msg.classList.add("is-error");
+      },
+      onCancelled: () => {
+        $("p-demo-rebuild-btn").disabled = false;
+        msg.textContent = "Build cancelled.";
       },
     });
   } catch (e) {
     $("p-demo-rebuild-btn").disabled = false;
-    msg.textContent = "Rebuild failed: " + e.message;
+    msg.textContent = "Build failed: " + e.message;
     msg.classList.add("is-error");
   }
 }
@@ -1228,7 +1247,8 @@ function maybeOfferDemoRebuild(err) {
   const isDemo = state.predictModel && state.predictModel.name === DEMO_MODEL_NAME;
   if (isDemo && /bundle|weights|could not read|load|architecture|corrupt/i.test(String(err))) {
     $("p-demo-rebuild").classList.remove("hidden");
-    $("p-demo-rebuild-msg").textContent = "Demo model needs rebuilding (" + err + ").";
+    $("p-demo-rebuild-btn").textContent = "Rebuild demo model";
+    $("p-demo-rebuild-msg").textContent = "The demo model needs rebuilding (" + err + ").";
     $("p-demo-rebuild-msg").classList.add("is-error");
   }
 }

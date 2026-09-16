@@ -637,30 +637,33 @@ class JobManager:
         artifacts = predict_report.build(job.dir, bundle, result, cfg)
         job.results = {"kind": "predict", **artifacts}
 
-    # ----------------------------------------------------------------- demo rebuild
+    # ----------------------------------------------------------------- demo build
     def _execute_demo(self, job: Job):
-        """Retrain the shipped demo model from demo/demo_train.csv (progress like a
-        normal refit). Used when the committed bundle can't load in this env."""
-        import pandas as pd
-        import make_demo
+        """Build the demo model: ensure the (torch-free) demo data, then refit and
+        save the bundle into demo_cache/. Progress/cancel like a normal refit."""
+        import demo
         import model_io
 
-        train_csv = paths.DEMO_DIR / "demo_train.csv"
-        if not train_csv.exists():
-            raise RuntimeError("demo_train.csv is missing; regenerate the demo data")
-        model_name = job.config.get("model") or make_demo.DEFAULT_MODEL
-        epochs = int(job.config.get("epochs") or make_demo.DEMO_CUSTOM["maximum_epochs"])
+        model_name = job.config.get("model") or demo.DEFAULT_MODEL
+        epochs = int(job.config.get("epochs") or demo.DEFAULT_EPOCHS)
         job.n_models, job.n_splits, job.total_units = 1, 1, 1
         job.current_model, job.current_split = model_name, 1
         job.max_epochs = epochs
         job.epoch = 0
         job.phase = "train"
-        job.step = "Rebuilding the demo model"
-        train = pd.read_csv(train_csv)
+        job.step = "Building the demo model"
+
+        def progress_cb(step, _frac):
+            job.step = step
+
         job._counting = True
         try:
-            info = make_demo.train_model(paths.DEMO_DIR, train, model_name=model_name,
-                                         epochs=epochs, deterministic=True)
+            info = demo.build_demo_model(progress_cb=progress_cb,
+                                         cancel_flag=job.cancel_event.is_set,
+                                         model_name=model_name, epochs=epochs,
+                                         deterministic=True)
+        except demo.DemoCancelled:
+            raise Cancelled()
         finally:
             job._counting = False
         meta = model_io.read_meta(info["path"])

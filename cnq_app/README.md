@@ -34,13 +34,14 @@ Keep the terminal open while using the app. Press **Ctrl+C** in the terminal to 
 
 ## Try the demo
 
-Want to see it work before using your own data? Everything below uses **simulated**
-demo data that ships with the app.
+Want to see it work before using your own data? Everything below happens **in the
+browser** — no terminal needed. It all uses **simulated** demo data.
 
 1. On the **Train a model** tab, click **Use demo training data**, pick a model,
    set **Quantile levels → Every 5%**, and **Start training**.
 2. Switch to the **Predict new subjects** tab and choose **Demo model (simulated
-   data)** from the list.
+   data)**. If it says *"not built yet"*, click **Build demo model** once (about
+   2 minutes) — the demo data and model are created for you automatically.
 3. Under **Or use demo new subjects**, click **20 new patients** and **Run
    prediction** — note the two subjects flagged out-of-range.
 4. Try **500 with outcomes** (coverage close to nominal) and then **500 shifted

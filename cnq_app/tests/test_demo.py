@@ -1,14 +1,15 @@
-"""Demo assets: generation, the committed bundle, and delete protection.
-
-`test_make_demo_quick` regenerates everything at tiny size/epoch count and
-checks the generated bundle end to end. The committed-asset tests skip until
-`make_demo.py` has been run and the files committed. Needs torch + deepcnq.
+"""Demo assets: on-demand generation (no torch), the build-model job, and the
+committed bundle. Data-generation tests redirect demo.COMMITTED_DIR / CACHE_DIR
+to a temp folder so they never touch the committed assets.
 """
+import json
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pandas as pd
@@ -17,97 +18,183 @@ import pytest
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-import make_demo  # noqa: E402
-import model_io  # noqa: E402
+import demo  # noqa: E402 (torch-free)
+import model_io  # noqa: E402 (torch-light)
 import paths  # noqa: E402
-import predict  # noqa: E402
 
-DEMO = APP_DIR / "demo"
-_COMMITTED = (paths.DEMO_MODEL.exists()
-              and (DEMO / "demo_new_subjects.csv").exists()
-              and (DEMO / "demo_new_subjects_with_outcomes.csv").exists()
-              and (DEMO / "demo_shifted_population.csv").exists())
-needs_committed = pytest.mark.skipif(
-    not _COMMITTED, reason="demo assets not generated yet; run `python make_demo.py`")
+
+@pytest.fixture
+def demo_dirs(monkeypatch, tmp_path):
+    """Point demo generation at empty temp folders (committed + cache)."""
+    committed, cache = tmp_path / "demo", tmp_path / "demo_cache"
+    monkeypatch.setattr(demo, "COMMITTED_DIR", committed)
+    monkeypatch.setattr(demo, "CACHE_DIR", cache)
+    return committed, cache
+
+
+def _http(url, data=None, headers=None, method=None):
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def _boot():
+    from server import Handler
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+
+def _poll(base, job_id, timeout=300):
+    end = time.time() + timeout
+    while time.time() < end:
+        st, body = _http(f"{base}/api/status?id={job_id}")
+        s = json.loads(body)
+        if s["state"] in ("done", "cancelled", "error"):
+            return s
+        time.sleep(0.3)
+    raise AssertionError("job timed out")
 
 
 # --------------------------------------------------------------------------- #
-# generation (tiny)
+# data generation (no torch)
 # --------------------------------------------------------------------------- #
-def test_make_demo_quick(tmp_path):
-    info = make_demo.build_all(tmp_path, n_train=250, n_new=20, n_outcomes=150,
-                               n_shifted=150, epochs=1, deterministic=True)
-    for key in ("train", "new", "outcomes", "shifted", "model"):
-        assert (tmp_path / make_demo.FILES[key]).exists(), f"missing {key}"
-    assert (tmp_path / "README.md").exists()
+def test_ensure_demo_data_is_byte_identical(demo_dirs):
+    _, cache = demo_dirs
+    r1 = demo.ensure_demo_data()
+    assert set(r1["generated"]) == set(demo.CSV_FILES.values())
+    first = {v: (cache / v).read_bytes() for v in demo.CSV_FILES.values()}
 
-    # new subjects: 20 rows, note column, NO outcomes, exactly 2 out-of-range notes
-    new = pd.read_csv(tmp_path / make_demo.FILES["new"])
-    assert len(new) == 20
-    assert "note" in new.columns
+    for v in demo.CSV_FILES.values():
+        (cache / v).unlink()
+    demo.ensure_demo_data()
+    for v in demo.CSV_FILES.values():
+        assert (cache / v).read_bytes() == first[v], f"{v} not byte-identical across generations"
+
+    # structure of the new-subjects file
+    new = pd.read_csv(cache / demo.CSV_FILES["new"])
+    assert len(new) == 20 and "note" in new.columns
     assert "time" not in new.columns and "event" not in new.columns
     assert new["note"].str.contains("out-of-range").sum() == 2
 
-    # the generated bundle loads and predicts all 20, flagging exactly 2, ignoring `note`
-    bundle = model_io.load_bundle(tmp_path / make_demo.FILES["model"])
-    r = predict.run_prediction(bundle, new, {}, id_col="subject_id")
-    assert r["n"] == 20
-    assert r["out_of_range_count"] == 2
-    assert "note" not in r["columns"]  # extra column ignored
 
-    # external validation runs on BOTH outcome files
-    for key in ("outcomes", "shifted"):
-        frame = pd.read_csv(tmp_path / make_demo.FILES[key])
-        res = predict.run_prediction(bundle, frame, {}, id_col="subject_id",
-                                     time_col="time", event_col="event")
-        assert res["external"] and res["external"]["available"], key
+def test_concurrent_generation_produces_one_valid_set(demo_dirs):
+    _, cache = demo_dirs
+    errors = []
 
-    # info dict carries a model size + timing (for DEMO.md)
-    assert info["model"]["size_mb"] > 0 and info["model"]["seconds"] >= 0
+    def worker():
+        try:
+            demo.ensure_demo_data()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    # every file exists exactly once and parses with the right row counts
+    for key, name in demo.CSV_FILES.items():
+        assert (cache / name).exists()
+        pd.read_csv(cache / name)  # valid CSV
+    assert len(pd.read_csv(cache / demo.CSV_FILES["train"])) == demo.N_TRAIN
+
+
+def test_demo_endpoints_autogenerate_without_scripts(demo_dirs):
+    httpd, base = _boot()
+    try:
+        st, body = _http(f"{base}/api/demo/train")
+        assert st == 200 and b"make_demo" not in body and b"not found" not in body
+        for key in ("new", "outcomes", "shifted"):
+            st, body = _http(f"{base}/api/demo/data?name={key}")
+            assert st == 200, body
+            info = json.loads(body)
+            assert info["n_rows"] > 0 and b"make_demo" not in body
+        # files really were written to the (temp) cache
+        for name in demo.CSV_FILES.values():
+            assert (demo.CACHE_DIR / name).exists()
+    finally:
+        httpd.shutdown()
+
+
+def test_sample_endpoint_regenerates(monkeypatch, tmp_path):
+    # Point the committed sample at a missing path and the cache at temp.
+    monkeypatch.setattr(paths, "SAMPLE_DATA", tmp_path / "nope.csv")
+    monkeypatch.setattr(demo, "CACHE_DIR", tmp_path / "demo_cache")
+    httpd, base = _boot()
+    try:
+        st, body = _http(f"{base}/api/sample")
+        assert st == 200 and b"make_demo" not in body and len(body) > 100
+    finally:
+        httpd.shutdown()
 
 
 # --------------------------------------------------------------------------- #
-# the committed bundle
+# build-model endpoint (needs torch)
 # --------------------------------------------------------------------------- #
+def test_build_endpoint_starts_job_attaches_and_registers(demo_dirs, monkeypatch):
+    monkeypatch.setattr(demo, "DEFAULT_EPOCHS", 5)  # tiny; leaves a window to attach
+    httpd, base = _boot()
+    try:
+        st, body = _http(f"{base}/api/demo/build", method="POST")
+        assert st == 200, body
+        job_id = json.loads(body)["job_id"]
+
+        # a second build while the first runs must attach, not start a new job
+        st, body2 = _http(f"{base}/api/demo/build", method="POST")
+        assert st == 200
+        again = json.loads(body2)
+        assert again["job_id"] == job_id and again.get("attached") is True
+
+        assert _poll(base, job_id)["state"] == "done"
+
+        # bundle written to the temp cache, loads, and now appears without needs_build
+        assert demo.resolve_model() is not None
+        model_io.load_bundle(demo.resolve_model())
+        st, body = _http(f"{base}/api/models")
+        entry = next(m for m in json.loads(body)["models"] if m.get("is_demo"))
+        assert not entry.get("needs_build") and entry.get("n_features") == 12
+    finally:
+        httpd.shutdown()
+
+
+def test_demo_model_cannot_be_deleted():
+    from server import DEMO_MODEL_NAME
+    httpd, base = _boot()
+    try:
+        st, _ = _http(f"{base}/api/models?name={urllib.parse.quote(DEMO_MODEL_NAME)}",
+                      method="DELETE")
+        assert st == 403
+    finally:
+        httpd.shutdown()
+
+
+# --------------------------------------------------------------------------- #
+# the committed bundle (present only after `python make_demo.py` was run)
+# --------------------------------------------------------------------------- #
+_COMMITTED = paths.DEMO_MODEL.exists() and (paths.DEMO_DIR / "demo_new_subjects.csv").exists()
+needs_committed = pytest.mark.skipif(not _COMMITTED, reason="committed demo assets not present")
+
+
 @needs_committed
 def test_committed_bundle_predicts_20_flags_2():
+    import predict
     bundle = model_io.load_bundle(paths.DEMO_MODEL)
-    new = pd.read_csv(DEMO / "demo_new_subjects.csv")
-    assert len(new) == 20 and "note" in new.columns
+    new = pd.read_csv(paths.DEMO_DIR / "demo_new_subjects.csv")
     r = predict.run_prediction(bundle, new, {}, id_col="subject_id")
-    assert r["n"] == 20
-    assert r["out_of_range_count"] == 2
+    assert r["n"] == 20 and r["out_of_range_count"] == 2
     assert "note" not in r["columns"]
 
 
 @needs_committed
 def test_committed_bundle_external_validation_both_files():
+    import predict
     bundle = model_io.load_bundle(paths.DEMO_MODEL)
     for name in ("demo_new_subjects_with_outcomes.csv", "demo_shifted_population.csv"):
-        frame = pd.read_csv(DEMO / name)
-        r = predict.run_prediction(bundle, frame, {}, id_col="subject_id",
-                                   time_col="time", event_col="event")
+        r = predict.run_prediction(bundle, pd.read_csv(paths.DEMO_DIR / name), {},
+                                   id_col="subject_id", time_col="time", event_col="event")
         assert r["external"] and r["external"]["available"], name
-        assert r["external"]["coverage_80"] is not None
-
-
-# --------------------------------------------------------------------------- #
-# delete protection (API)
-# --------------------------------------------------------------------------- #
-def test_demo_model_cannot_be_deleted():
-    from http.server import ThreadingHTTPServer
-    from server import Handler, DEMO_MODEL_NAME
-
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    base = f"http://127.0.0.1:{httpd.server_address[1]}"
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    try:
-        req = urllib.request.Request(
-            f"{base}/api/models?name={urllib.parse.quote(DEMO_MODEL_NAME)}", method="DELETE")
-        try:
-            urllib.request.urlopen(req, timeout=30)
-            raise AssertionError("delete should have been rejected")
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 403
-    finally:
-        httpd.shutdown()
