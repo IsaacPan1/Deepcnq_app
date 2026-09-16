@@ -1,0 +1,10 @@
+jobs/
+_runs/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.cnq_setup.json
+server.out
+server.log
+deepquant.zip

@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CNQ: Censored Non-crossing Quantile Regression</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="masthead-text">
+      <p class="product">CNQ</p>
+      <h1>Censored non-crossing quantile regression</h1>
+      <p class="sub">Predict the full survival-time distribution for each subject. Runs on this computer with the <code>deepquantreg</code> package.</p>
+      <ul class="legend" aria-label="Quantile colour key">
+        <li><i style="--c: var(--q10)"></i>τ 0.1</li>
+        <li><i style="--c: var(--q25)"></i>0.25</li>
+        <li><i style="--c: var(--q50)"></i>0.5</li>
+        <li><i style="--c: var(--q75)"></i>0.75</li>
+        <li><i style="--c: var(--q90)"></i>0.9</li>
+      </ul>
+    </div>
+    <svg class="fan" viewBox="0 0 600 170" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0,150 C200,146 400,140 600,132" stroke="var(--q10)"/>
+      <path d="M0,146 C200,134 400,114 600,100" stroke="var(--q25)"/>
+      <path d="M0,142 C200,120 400,88 600,66"  stroke="var(--q50)"/>
+      <path d="M0,138 C200,106 400,64 600,36"  stroke="var(--q75)"/>
+      <path d="M0,134 C200,94 400,44 600,10"   stroke="var(--q90)"/>
+    </svg>
+  </div>
+</header>
+
+<div id="health-banner" class="banner hidden" role="alert"></div>
+
+<main class="steps">
+  <!-- Step 1: data -->
+  <section class="card step" id="step-data">
+    <h2><span class="num">1</span> Upload data</h2>
+    <p class="lead">One CSV with a follow-up time, an event indicator and numeric covariates.
+      No data? <a href="/api/sample" download>Download the sample dataset</a> or
+      <a href="/api/template" download>download a template CSV</a>.</p>
+    <label class="dropzone" for="file-input">
+      <input type="file" id="file-input" accept=".csv,text/csv">
+      <span class="dz-title">Choose a CSV file</span>
+      <span class="dz-hint">or drag it here</span>
+    </label>
+    <p id="upload-status" class="status"></p>
+
+    <details class="data-format">
+      <summary>Data format &amp; requirements</summary>
+      <div class="data-format-body">
+        <p class="muted">One row per subject, with a header row and no blank rows.</p>
+        <table class="doc-table">
+          <tr><th>Column</th><th>What it is</th><th>Example</th></tr>
+          <tr><td>Follow-up time</td><td>Time until the event or last contact (a positive number)</td><td>12.4</td></tr>
+          <tr><td>Event indicator</td><td>1 = event happened, 0 = censored (still event-free)</td><td>1</td></tr>
+          <tr><td>Covariates</td><td>One or more numeric predictors</td><td>age = 58</td></tr>
+          <tr><td>Subject ID <span class="muted">(optional)</span></td><td>A label for each subject; not used as a predictor</td><td>S001</td></tr>
+        </table>
+        <ul class="checklist">
+          <li>No blank cells in the columns you use.</li>
+          <li>One row per subject (unique IDs if you provide an ID column).</li>
+          <li>A single header row at the top.</li>
+          <li>Times are positive; the event column is 0 or 1.</li>
+        </ul>
+        <p class="muted">Example</p>
+        <pre class="example">subject_id,time,event,age,biomarker,treatment
+S001,12.4,1,58,2.7,1
+S002,36.0,0,64,1.2,0</pre>
+        <p class="muted">Rough guide: aim for at least ~100 events; more events give steadier results.</p>
+      </div>
+    </details>
+
+    <div id="preview-wrap" class="hidden">
+      <h3>Preview</h3>
+      <div class="table-scroll"><table id="preview-table"></table></div>
+    </div>
+  </section>
+
+  <!-- Step 2: mapping -->
+  <section class="card step hidden" id="step-map">
+    <h2><span class="num">2</span> Map columns</h2>
+    <div class="row">
+      <label>Duration column
+        <select id="duration-col"></select>
+      </label>
+      <label>Event column <span class="muted">1 = event, 0 = censored</span>
+        <select id="event-col"></select>
+      </label>
+    </div>
+
+    <div id="event-map" class="hidden subpanel">
+      <p class="field-label">Which value means the event happened?
+        <span class="muted">the event column has two non-0/1 values</span></p>
+      <div id="event-map-options" class="segmented" role="radiogroup"></div>
+    </div>
+
+    <div class="row">
+      <label>Subject ID column <span class="muted">optional; labels predictions</span>
+        <select id="id-col"></select>
+      </label>
+      <label>Time unit <span class="muted">optional; used on plot axes</span>
+        <input type="text" id="time-unit" placeholder="e.g. months" maxlength="24">
+      </label>
+    </div>
+
+    <p class="field-label">Covariates <span class="muted">click to include or exclude</span></p>
+    <div id="feature-list" class="chips"></div>
+
+    <div id="validation-panel" class="validation hidden" aria-live="polite">
+      <div id="v-errors" class="v-group v-errors"></div>
+      <div id="v-warnings" class="v-group v-warnings"></div>
+      <div id="v-summary" class="v-summary"></div>
+    </div>
+  </section>
+
+  <!-- Step 3: models + config -->
+  <section class="card step hidden" id="step-config">
+    <h2><span class="num">3</span> Models and settings</h2>
+
+    <p class="field-label">Models</p>
+    <div id="model-list" class="chips chips-lg"></div>
+
+    <p class="field-label">Hyperparameters</p>
+    <div class="segmented" role="radiogroup">
+      <label><input type="radio" name="mode" value="preset" checked> Paper preset</label>
+      <label><input type="radio" name="mode" value="custom"> Custom</label>
+    </div>
+
+    <div id="preset-block" class="subpanel">
+      <label>Starting settings
+        <select id="preset-select"></select>
+      </label>
+      <p class="muted">Hyperparameters tuned in the paper on a dataset of similar size. Your data is not combined with it.</p>
+    </div>
+
+    <div id="custom-block" class="hidden subpanel grid-custom">
+      <label>Hidden width <input type="number" id="c-hidden" value="64" min="1"></label>
+      <label>Layers <input type="number" id="c-layers" value="2" min="1"></label>
+      <label>Dropout <input type="number" id="c-dropout" value="0" step="0.05" min="0" max="0.9"></label>
+      <label>Spline grid size <input type="number" id="c-grid" value="5" min="1"></label>
+      <label>Learning rate <input type="number" id="c-lr" value="0.0005" step="0.0001"></label>
+      <label>Weight decay <input type="number" id="c-wd" value="0" step="0.0001"></label>
+      <label>Batch size <input type="number" id="c-batch" value="64" min="1"></label>
+      <label>Max epochs <input type="number" id="c-epochs" value="200" min="1"></label>
+      <label>Early-stop patience <input type="number" id="c-patience" value="10" min="1"></label>
+    </div>
+
+    <label>Quantile levels
+      <select id="quantile-grid">
+        <option value="standard">Standard: 0.1, 0.25, 0.5, 0.75, 0.9</option>
+        <option value="every10">Every 10%: 0.1 to 0.9</option>
+        <option value="every5">Every 5%: 0.05 to 0.95</option>
+        <option value="every1">Every 1%: 0.01 to 0.99</option>
+        <option value="custom">Custom list</option>
+      </select>
+    </label>
+    <label id="quantile-custom-wrap" class="hidden">Custom levels
+      <span class="muted">comma separated; 0.1, 0.5 and 0.9 are always included</span>
+      <input type="text" id="quantile-custom" placeholder="e.g. 0.05, 0.25, 0.5, 0.75, 0.95">
+    </label>
+    <p id="quantile-info" class="muted"></p>
+    <p id="quantile-warning" class="q-warning hidden"></p>
+
+    <div class="row">
+      <label class="split">Split, % <span class="muted">train / validation / test</span>
+        <span class="split-inputs">
+          <input type="number" id="split-train" value="65" min="0" aria-label="Train percent">
+          <input type="number" id="split-valid" value="15" min="0" aria-label="Validation percent">
+          <input type="number" id="split-test" value="20" min="0" aria-label="Test percent">
+        </span>
+      </label>
+      <label>Repeated splits <input type="number" id="n-splits" value="1" min="1"></label>
+      <label>Seed <input type="number" id="seed" value="42"></label>
+    </div>
+    <label class="inline"><input type="checkbox" id="deterministic"> Deterministic mode <span class="muted">slower, exactly reproducible</span></label>
+  </section>
+
+  <!-- Step 4: run -->
+  <section class="card step hidden" id="step-run">
+    <h2><span class="num">4</span> Train</h2>
+    <div class="actions">
+      <button id="run-btn" class="primary">Start training</button>
+      <button id="cancel-btn" class="ghost-danger hidden">Cancel run</button>
+    </div>
+    <p id="run-error" class="error" role="status"></p>
+
+    <div id="progress-wrap" class="progress hidden" aria-live="polite">
+      <div class="progress-head">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="progress-step">Starting</span>
+      </div>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <div id="progress-detail" class="progress-detail"></div>
+    </div>
+  </section>
+
+  <!-- Results -->
+  <section class="card step hidden" id="step-results">
+    <h2><span class="num">5</span> Results</h2>
+    <div class="downloads">
+      <a id="dl-report" class="btn" target="_blank">Open report in new tab</a>
+      <a id="dl-zip" class="btn btn-outline">Download results (.zip)</a>
+    </div>
+    <iframe id="report-frame" title="Run report"></iframe>
+  </section>
+</main>
+
+<footer class="foot">Runs locally. Your data never leaves this computer.</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+# CNQ App — developer notes
+
+Technical documentation for the local web app that wraps the `deepquantreg`
+package. End-user instructions live in [README.md](README.md).
+
+## Layout
+
+The app and the upstream repo are **sibling directories**:
+
+```
+deepquant/
+  deepcnq/    # the BIG-S2/deepcnq clone — unmodified upstream, never edited
+  cnq_app/    # this app
+```
+
+**The app never creates, modifies or deletes anything under `deepcnq/`.** It
+imports the `deepquantreg` package directly from the repo's `src/` and reads the
+configs from the repo's `configs/`; it does not install or vendor the package. If
+an upstream API change breaks the app, fix it here in `cnq_app/`, never in the
+repo.
+
+## Repo discovery (`paths.py`)
+
+`paths.py` resolves the repo root in this order:
+
+1. the `CNQ_REPO` environment variable, if set;
+2. the sibling `../deepcnq` next to the app;
+3. otherwise it fails with a clear message explaining both options.
+
+It validates that `src/deepquantreg/__init__.py` and
+`configs/final/real/cnq.yaml` exist, then inserts `<repo>/src` at the front of
+`sys.path`. Discovery is attempted at import but never raises there: on failure
+`paths.REPO_ROOT is None` and `paths.REPO_ERROR` holds the message, so the server
+still starts and reports the problem via `/api/health` and a page banner.
+
+Exposed names: `REPO_ROOT`, `CONFIGS_DIR`, `SRC`, `CNQ_PRESET_CONFIG`,
+`SMOKE_CONFIG` (all `None` when the repo is missing); app-local `STATIC`,
+`SAMPLE_DATA`, `REQUIREMENTS`, `OUTPUT_DIR`; and helpers `require_repo()`,
+`repo_version()` (git commit + dirty flag, else `VERSION.txt`, else `"unknown"`)
+and `repo_info()`.
+
+Set `CNQ_REPO` to point at a repo elsewhere:
+
+```bash
+CNQ_REPO=/path/to/deepcnq python -m server          # macOS/Linux
+set CNQ_REPO=C:\path\to\deepcnq && python -m server  # Windows cmd
+```
+
+## Running the server directly
+
+`run.py` is the first-run launcher (venv + deps); once dependencies are present
+you can run the server module directly from `cnq_app/`:
+
+```bash
+python -m server            # http://127.0.0.1:8000/
+python -m server 9000 -b 0.0.0.0
+```
+
+It also works from any working directory, because all paths resolve from
+`Path(__file__)` / `paths`:
+
+```bash
+python /abs/path/to/cnq_app/server.py 8002
+```
+
+`python -m server` takes an optional positional **port** (default `8000`) and
+`-b/--bind` (default `127.0.0.1`), prints the URL and the repo path/version,
+warns about missing packages, and exits cleanly on Ctrl+C. A busy port prints a
+one-line suggestion.
+
+### Lazy imports
+
+Only the standard library plus the stdlib-only `paths` module is imported when
+`server.py` loads. The scientific stack (pandas, torch, matplotlib) and the
+`pipeline`/`jobs` modules import lazily inside the request handlers, so the
+server always starts. `GET /api/health` reports package availability **and**
+whether the repo was found (with its path and version); the page shows a banner
+if anything is missing.
+
+### Progress hook
+
+Per-epoch progress and cancellation are implemented by wrapping
+`deepquantreg.training.trainer.predict_quantiles`. `trainer.fit` calls that
+function once per epoch to score the validation split, so the wrapper is a clean
+place to count epochs and to abort a fit when the user cancels.
+
+## Outputs
+
+Everything the app writes stays under `cnq_app/`:
+
+- `.venv/` — the launcher's virtual environment
+- `jobs/` — per-run output directories, plus `jobs/uploads/` for uploaded CSVs
+- `sample_data/` — the bundled sample dataset
+- `__pycache__/`, `.pytest_cache/` — caches
+
+`results.json` and the HTML report both record the repo path and version
+(commit hash or `VERSION.txt`).
+
+## Dependencies
+
+`cnq_app/requirements.txt` lists the app's own runtime deps (numpy, pandas,
+scikit-learn, matplotlib, PyYAML). PyTorch is **not** listed there — `run.py`
+installs it from the CPU/CUDA wheel index. The launcher only ever uses
+`cnq_app/requirements.txt`, never the repo's, and the install stamp hashes that
+file.
+
+```bash
+python run.py            # set up (if needed) and launch
+python run.py 8001       # different port
+python run.py --cuda     # CUDA torch wheels
+python run.py --reinstall
+```
+
+## Data validation (`validation.py`)
+
+`validation.validate(df, duration_col, event_col, feature_cols, id_col=None, *,
+ratio, seed, n_splits, event_positive)` returns `{"errors", "warnings",
+"summary"}`. Each message is a dict with a `code`, a plain-language `message`
+and, where relevant, `column`/`count`/`values`/`examples`. Errors block a run;
+warnings must be acknowledged in the UI.
+
+It is called from three places: `POST /api/upload` (with a server-guessed
+mapping), `POST /api/validate` (live, as the mapping changes) and `POST /api/run`
+(which refuses to start while any error remains). The rules map directly onto the
+`deepquantreg` requirements the app depends on:
+
+**Errors** (block the run)
+
+| Rule | Why (repo requirement) |
+|------|------------------------|
+| duration column not numeric | `prepare_real` scales/log-transforms a numeric time |
+| event column not 0/1 | KM censoring weights need a 0/1 indicator. With exactly two other values (`1`/`2`, `True`/`False`, `dead`/`alive`) the app offers a mapping (`event_positive`) instead of guessing |
+| no features selected | the model needs at least one input to `StandardScaler` |
+| a selected feature is non-numeric | features are standardised with `StandardScaler` (numeric only); the message shows example values |
+| no events at all | KM/IPCW and Uno C need observed events |
+| fewer than 10 events in any split (checked after splitting with the chosen ratio/seed) | each split's train/valid/test must estimate weights and metrics |
+| duplicate IDs (when an ID column is chosen) | one row per subject |
+
+**Warnings** (must be confirmed)
+
+| Rule | Effect |
+|------|--------|
+| duration ≤ 0 | excluded (log time needs duration > 0) |
+| missing / non-numeric cells in selected columns | excluded, with a per-column count |
+| a feature with a single constant value | no information; StandardScaler gives it zero variance |
+| fewer than 100 events in total | results may be unstable |
+| more than 80% censoring | estimates may be unreliable |
+| the event or duration column also selected as a feature | outcome leakage |
+
+**Summary**: rows before/after exclusions, events, censoring %, duration range and
+number of features.
+
+The duration `> 0` and 0/1-event exclusions are applied in `pipeline.build_frame`
+(rows are dropped, not errored), and `event_positive`/`id_col` are threaded
+through `build_frame`. `results.json` and the report include a **Data** section
+(file name, rows used/excluded with reasons, events, censoring %, time unit,
+event mapping, features).
+
+## Settings: presets & quantile grids (`presets.py`, `grids.py`)
+
+**Starting settings (presets).** `presets.PRESET_META` holds the approximate
+size and censoring of each paper cohort (published figures for the public
+benchmarks; the app never combines user data with them). `preset_label` renders
+`"METABRIC (≈1,900 subjects, 42% censored)"` (subject counts rounded to two
+significant figures), and `preset_meta()` ships these to the front end in
+`/api/config`. `suggest_preset(n_subjects, censoring_pct)` picks the closest
+cohort: the main distance is `|log(n_user) − log(n_preset)|`, with censoring as a
+secondary term (`+ 0.3 · |Δcensoring|/100`) so it only breaks near-ties. The
+suggestion is computed from the validation summary and returned as
+`suggested_preset` on `/api/upload` and `/api/validate`; the UI marks that option
+"suggested" and pre-selects it until the user changes it.
+
+**Quantile grids.** `grids.py` is the single source of truth. `build_grid(kind,
+custom)` supports `standard`, `every10`, `every5`, `every1` and `custom`,
+building levels by integer stepping and `round(x, 4)` so there are no
+floating-point artefacts. `merge_required` always adds `0.1/0.5/0.9`, drops
+out-of-range values, sorts and de-duplicates. `resolve(cfg)` prefers a
+`quantile_grid` spec, else a raw `quantiles` list. `has_extreme` flags levels
+below 0.05 or above 0.95 (the UI warns; the bounds themselves are not extreme),
+and `standard_present` returns the standard five that appear in a grid.
+
+The client (`app.js`) mirrors `build_grid` only to show the live level count and
+the extreme-levels warning; the server rebuilds the grid authoritatively in
+`/api/run` (`grids.resolve`) and `jobs` records `{kind, n_levels}` in
+`results.json`. With more than five levels:
+
+- metric tables and calibration show only the standard levels present, while the
+  "Pinball (mean over full grid)" row is the average over every level;
+- an **Individual survival curves** plot (`plots.survival_curves_plot`) draws
+  `S(t) = 1 − τ` against predicted time for a few subjects;
+- full-grid per-subject predictions (original-scale times) are written to
+  `predictions/<model>.csv` inside the results zip.
+
+## Tests
+
+```bash
+cd cnq_app
+python -m pytest tests -q
+```
+
+`tests/test_smoke.py` covers the full pipeline through the `JobManager`
+(background thread, progress hook, plots, report, zip), an **API-level**
+end-to-end test that boots the real server in a thread, quantile validation, and
+cancellation. `tests/test_validation.py` covers every data-validation rule with
+small synthetic frames plus an API flow that uploads a messy CSV (1/2 event
+coding, a text column, blank cells), checks the messages, fixes the mapping and
+completes a run. Both use the repo's smoke config (`configs/smoke/simulated.yaml`)
+and the bundled sample data.
+
+## Building a release
+
+```bash
+cd cnq_app
+python make_release.py          # writes ../../deepquant.zip
+python make_release.py --allow-dirty
+```
+
+The archive contains a top-level `deepquant/` with `deepcnq/` (everything tracked
+by `git ls-files`, `.git` excluded, plus a generated `deepcnq/VERSION.txt`) and
+`cnq_app/` (excluding `.venv/`, `jobs/`, `__pycache__/`, `*.pyc`,
+`.pytest_cache/` and other outputs). `VERSION.txt` is written into the archive
+only — never onto disk in the repo. The build refuses a dirty repo unless
+`--allow-dirty` is passed.
+
+## Updating the repo
+
+```bash
+cd cnq_app
+python update_repo.py       # git pull --ff-only, then the smoke test
+```
+
+Manual equivalent:
+
+```bash
+cd deepcnq && git pull
+```
+
+## File table
+
+| File | Purpose |
+|------|---------|
+| `paths.py` | repo discovery (`CNQ_REPO`/sibling), `sys.path`, version helpers |
+| `run.py` | first-run launcher: builds `.venv`, installs deps, stamps, launches |
+| `run.bat` / `run.sh` | double-click wrappers that find Python and call `run.py` |
+| `server.py` | `python -m server` entry point; CLI, `/api/health`, static serving, raw-body upload |
+| `jobs.py` | background job manager, progress hook, cancellation, orchestration |
+| `pipeline.py` | data prep (`prepare_real` replica), training, metrics, importance |
+| `validation.py` | data-spec checks (errors/warnings/summary) used by upload, validate and run |
+| `presets.py` | resolve hyper-parameters from `cnq.yaml`; preset labels + closest-cohort suggestion |
+| `grids.py` | quantile-grid generation (kinds, rounding, required levels, standard subset) |
+| `plots.py` | the seven matplotlib figures |
+| `report.py` | self-contained HTML report + results zip |
+| `update_repo.py` | fast-forward the repo, then run the smoke test |
+| `make_release.py` | build the self-contained `deepquant.zip` |
+| `static/` | front end (HTML/CSS/JS) |
+| `sample_data/` | bundled simulated dataset + its generator |
+| `requirements.txt` | the app's own runtime dependencies (torch installed by `run.py`) |
+| `tests/test_smoke.py` | end-to-end + API + quantile-validation + cancellation tests |
+| `tests/test_validation.py` | per-rule data-validation tests + a messy-CSV API flow |
+| `tests/test_grids.py` | quantile-grid generation, preset suggestion, and a 5%-grid smoke run |

@@ -1,0 +1,7 @@
+# cnq_app runtime dependencies (the app's own, independent of the repo).
+# PyTorch is installed separately by run.py from the CPU/CUDA wheel index.
+numpy>=1.23,<3
+pandas>=1.5,<4
+scikit-learn>=1.2,<2
+matplotlib>=3.6,<4
+PyYAML>=6,<7
