@@ -31,6 +31,7 @@ import paths  # stdlib-only; discovers the repo and puts deepquantreg on sys.pat
 STATIC_DIR = paths.STATIC
 SAMPLE_DATA = paths.SAMPLE_DATA
 UPLOAD_DIR = paths.OUTPUT_DIR / "uploads"
+MODELS_DIR = paths.MODELS_DIR
 MAX_UPLOAD = 64 * 1024 * 1024  # 64 MB raw-body cap
 
 # Packages the app needs; import name -> pip name (for the health banner).
@@ -280,6 +281,24 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/template":
                 return self._send_bytes(TEMPLATE_CSV.encode("utf-8"), "text/csv",
                                         filename="cnq_template.csv")
+            if route == "/api/models":
+                return self._handle_list_models()
+            if route == "/api/models/download":
+                return self._handle_model_download(query)
+            if route == "/api/predictions":
+                return self._handle_download(query, "predictions.csv", "text/csv",
+                                             "cnq_predictions.csv")
+            return self._error("not found", 404)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(f"{type(exc).__name__}: {exc}", 500)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        route = parsed.path
+        query = parse_qs(parsed.query)
+        try:
+            if route == "/api/models":
+                return self._handle_delete_model(query)
             return self._error("not found", 404)
         except Exception as exc:  # noqa: BLE001
             return self._error(f"{type(exc).__name__}: {exc}", 500)
@@ -297,6 +316,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_run()
             if route == "/api/cancel":
                 return self._handle_cancel(query)
+            if route == "/api/save":
+                return self._handle_save()
+            if route == "/api/predict/upload-model":
+                return self._handle_upload_model()
+            if route == "/api/predict/upload-data":
+                return self._handle_predict_upload_data()
+            if route == "/api/predict/validate":
+                return self._handle_predict_validate()
+            if route == "/api/predict/run":
+                return self._handle_predict_run()
             return self._error("not found", 404)
         except Exception as exc:  # noqa: BLE001
             return self._error(f"{type(exc).__name__}: {exc}", 500)
@@ -418,6 +447,147 @@ class Handler(SimpleHTTPRequestHandler):
             return self._error("file not ready", 404)
         self._send_bytes(target.read_bytes(), content_type,
                          filename=None if inline else download_name)
+
+    # ---- saved models ----
+    def _handle_list_models(self):
+        import model_io
+        out = []
+        if MODELS_DIR.exists():
+            for p in sorted(MODELS_DIR.glob("*.cnqmodel")):
+                try:
+                    out.append({"name": p.stem, "file": p.name, **model_io.summarize(
+                        model_io.read_meta(p))})
+                except Exception as exc:  # noqa: BLE001 - list what we can, flag the rest
+                    out.append({"name": p.stem, "file": p.name, "error": str(exc)})
+        self._send_json({"models": out})
+
+    def _handle_model_download(self, query):
+        import model_io
+        name = _one(query, "name")
+        if not name:
+            return self._error("model name required")
+        path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
+        if not path.exists():
+            return self._error("model not found", 404)
+        self._send_bytes(path.read_bytes(), "application/octet-stream",
+                         filename=f"{path.stem}.cnqmodel")
+
+    def _handle_delete_model(self, query):
+        import model_io
+        name = _one(query, "name")
+        if not name:
+            return self._error("model name required")
+        path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
+        if not path.exists():
+            return self._error("model not found", 404)
+        path.unlink()
+        self._send_json({"deleted": True, "name": path.stem})
+
+    # ---- save a trained model ----
+    def _handle_save(self):
+        if not self._repo_ready():
+            return
+        cfg = json.loads(self._read_body() or b"{}")
+        for key in ("source_job_id", "model", "bundle_type", "name"):
+            if not cfg.get(key):
+                return self._error(f"missing '{key}'")
+        if cfg["bundle_type"] not in ("final", "ensemble", "single_split"):
+            return self._error("invalid bundle_type")
+        manager = _get_manager()
+        if manager.active() is not None:
+            return self._error("a job is already running", 409)
+        try:
+            job = manager.start({"kind": "save", **cfg})
+        except Exception as exc:  # noqa: BLE001
+            return self._error(str(exc))
+        self._send_json({"job_id": job.id, **job.status()})
+
+    # ---- predict ----
+    def _bundle_path_from_ref(self, ref):
+        import model_io
+        ref = ref or {}
+        if ref.get("path"):
+            p = Path(ref["path"])
+        elif ref.get("name"):
+            p = MODELS_DIR / f"{model_io.safe_name(ref['name'])}.cnqmodel"
+        else:
+            raise ValueError("no model selected")
+        if not p.exists():
+            raise FileNotFoundError("model not found")
+        return p
+
+    def _handle_upload_model(self):
+        if not self._repo_ready():
+            return
+        import model_io
+        data = self._read_body()
+        if not data:
+            return self._error("empty upload")
+        dest_dir = UPLOAD_DIR / "models"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / f"{uuid.uuid4().hex[:12]}.cnqmodel"
+        path.write_bytes(data)
+        try:
+            meta = model_io.read_meta(path)
+        except Exception as exc:  # noqa: BLE001
+            path.unlink(missing_ok=True)
+            return self._error(f"not a valid model bundle: {exc}")
+        self._send_json({"model_path": str(path), "summary": model_io.summarize(meta)})
+
+    def _handle_predict_upload_data(self):
+        if not self._repo_ready():
+            return
+        data = self._read_body()
+        if not data:
+            return self._error("empty upload")
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        path = UPLOAD_DIR / f"predict_{uuid.uuid4().hex[:12]}.csv"
+        path.write_bytes(data)
+        try:
+            info = preview_csv(path)
+        except Exception as exc:  # noqa: BLE001
+            path.unlink(missing_ok=True)
+            return self._error(f"could not parse CSV: {exc}")
+        info["csv_path"] = str(path)
+        info["file_name"] = self.headers.get("X-Filename") or path.name
+        self._send_json(info)
+
+    def _handle_predict_validate(self):
+        if not self._repo_ready():
+            return
+        import model_io
+        import pandas as pd
+        import predict as predict_mod
+        cfg = json.loads(self._read_body() or b"{}")
+        if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
+            return self._error("upload a CSV first")
+        try:
+            meta = model_io.read_meta(self._bundle_path_from_ref(cfg.get("model_ref")))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(f"could not read the model: {exc}")
+        raw = pd.read_csv(cfg["csv_path"])
+        result = predict_mod.validate(
+            meta, raw, cfg.get("feature_map"), id_col=cfg.get("id_col"),
+            time_col=cfg.get("time_col"), event_col=cfg.get("event_col"),
+            event_positive=cfg.get("event_positive"))
+        result["model_summary"] = model_io.summarize(meta)
+        self._send_json(result)
+
+    def _handle_predict_run(self):
+        if not self._repo_ready():
+            return
+        cfg = json.loads(self._read_body() or b"{}")
+        if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
+            return self._error("upload a CSV first")
+        try:
+            self._bundle_path_from_ref(cfg.get("model_ref"))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(f"invalid model: {exc}")
+        manager = _get_manager()
+        if manager.active() is not None:
+            return self._error("a job is already running", 409)
+        job = manager.start({"kind": "predict", **cfg})
+        self._send_json({"job_id": job.id, **job.status()})
 
 
 class Server(ThreadingHTTPServer):

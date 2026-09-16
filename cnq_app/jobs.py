@@ -23,6 +23,7 @@ import pipeline
 import plots
 import report
 import presets
+import save_model
 from deepquantreg.training import trainer as _trainer
 
 RUNS_DIR = paths.OUTPUT_DIR
@@ -60,6 +61,7 @@ _trainer.predict_quantiles = _patched_predict
 class Job:
     id: str
     config: dict
+    kind: str = "train"            # train|save|predict
     state: str = "pending"        # pending|running|done|cancelled|error
     phase: str = "queued"          # queued|prepare|train|plots|report|done
     step: str = "Queued"
@@ -77,6 +79,7 @@ class Job:
     results: Optional[dict] = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     _counting: bool = False
+    _override: Optional[float] = None   # explicit 0..1 progress for non-train jobs
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def _touch(self):
@@ -98,7 +101,7 @@ class Job:
 
     def status(self) -> dict:
         with self._lock:
-            prog = self.progress()
+            prog = self._override if self._override is not None else self.progress()
             if self.phase in ("plots",):
                 prog = 0.93
             elif self.phase == "report":
@@ -107,6 +110,7 @@ class Job:
                 prog = 1.0
             return {
                 "id": self.id,
+                "kind": self.kind,
                 "state": self.state,
                 "phase": self.phase,
                 "step": self.step,
@@ -149,7 +153,7 @@ class JobManager:
     def start(self, config: dict) -> Job:
         if self.active() is not None:
             raise RuntimeError("a job is already running; cancel it first")
-        job = Job(id=uuid.uuid4().hex[:12], config=config)
+        job = Job(id=uuid.uuid4().hex[:12], config=config, kind=config.get("kind", "train"))
         job.dir.mkdir(parents=True, exist_ok=True)
         self._jobs[job.id] = job
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
@@ -169,7 +173,12 @@ class JobManager:
         job.state = "running"
         job.started_at = time.time()
         try:
-            self._execute(job)
+            if job.kind == "save":
+                self._execute_save(job)
+            elif job.kind == "predict":
+                self._execute_predict(job)
+            else:
+                self._execute(job)
             if job.cancel_event.is_set():
                 job.state = "cancelled"
                 job.step = "Cancelled"
@@ -235,12 +244,33 @@ class JobManager:
         rep_models: dict[str, Any] = {}
         rep_prepared: dict[str, Any] = {}
 
+        # Persist per-split weights + scalers + feature ranges so a later "Save
+        # model" job can bundle the exact trained models, or refit on all data.
+        art_dir = job.dir / "artifacts"
+        (art_dir / "weights").mkdir(parents=True, exist_ok=True)
+        (art_dir / "feature_ranges.json").write_text(
+            json.dumps(save_model.feature_ranges(frame, feature_cols)))
+        (art_dir / "training.json").write_text(json.dumps({
+            **save_model.training_stats(frame),
+            "event_mapping": self._data_section.get("event_mapping"),
+        }))
+        (art_dir / "context.json").write_text(json.dumps({
+            "csv_path": cfg["csv_path"],
+            "duration_col": cfg["duration_col"],
+            "event_col": cfg["event_col"],
+            "id_col": id_col,
+            "event_positive": event_positive,
+            "feature_cols": feature_cols,
+        }))
+        split_scalers: dict[str, dict] = {}
+
         job.phase = "train"
         for split_index in range(n_splits):
             if job.cancel_event.is_set():
                 raise Cancelled()
             split_seed = seed + split_index
             prepared = pipeline.prepare(frame, feature_cols, ratio, split_seed, epsilon)
+            split_scalers[str(split_index)] = save_model.scaler_dict(prepared.scaler)
             for model_name in models:
                 if job.cancel_event.is_set():
                     raise Cancelled()
@@ -264,7 +294,13 @@ class JobManager:
                     rep_prepared[model_name] = out.prepared
                     out.keep_model = None  # drop the large reference from the stored output
                     out.prepared = None
+                import torch
+                torch.save(out.state_dict,
+                           str(art_dir / "weights" / f"{model_name}__{split_index}.pt"))
+                out.state_dict = None  # weights now on disk; free memory
                 job.unit_index += 1
+
+        (art_dir / "scalers.json").write_text(json.dumps(split_scalers))
 
         # ---- summarize -------------------------------------------------
         summaries = {m: pipeline.summarize_model(outputs[m], quantiles) for m in models}
@@ -410,6 +446,175 @@ class JobManager:
             },
             "importance": {m: importance[m].tolist() for m in models},
         }
+
+    # ----------------------------------------------------------------- save
+    def _reload_frame(self, context: dict):
+        raw = pipeline.load_frame(context["csv_path"])
+        return pipeline.build_frame(
+            raw, context["duration_col"], context["event_col"], context["feature_cols"],
+            id_col=context.get("id_col") or None,
+            event_positive=context.get("event_positive"))
+
+    @staticmethod
+    def _split_metrics(results: dict, model: str, split_index: int) -> dict:
+        for entry in results.get("per_split", {}).get(model, []):
+            if entry.get("split_index") == split_index:
+                return entry.get("metrics", {})
+        return {}
+
+    def _execute_save(self, job: Job):
+        import torch
+        import model_io
+
+        cfg = job.config
+        source_id = cfg["source_job_id"]
+        model_name = cfg["model"]
+        bundle_type = cfg["bundle_type"]
+        name = _safe_name(cfg["name"])
+
+        src_dir = RUNS_DIR / source_id
+        results_path = src_dir / "results.json"
+        if not results_path.exists():
+            raise RuntimeError("the source training run was not found (nothing to save)")
+        results = json.loads(results_path.read_text())
+        rconfig = results["config"]
+        if model_name not in rconfig["models"]:
+            raise RuntimeError(f"model {model_name!r} was not part of that run")
+        resolved = results["resolved"][model_name]
+        quantiles = [float(q) for q in rconfig["quantiles"]]
+        feature_cols = list(rconfig["feature_cols"])
+        seed = int(rconfig["seed"])
+        time_unit = rconfig.get("time_unit")
+
+        art = src_dir / "artifacts"
+        if not (art / "scalers.json").exists():
+            raise RuntimeError("this run has no saved training artifacts (retrain to enable saving)")
+        context = json.loads((art / "context.json").read_text())
+        training = json.loads((art / "training.json").read_text())
+        event_mapping = training.pop("event_mapping", None)
+        ranges = json.loads((art / "feature_ranges.json").read_text())
+        scalers_by_split = json.loads((art / "scalers.json").read_text())
+
+        paths.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = paths.MODELS_DIR / f"{name}.cnqmodel"
+        if out_path.exists():
+            raise RuntimeError(f"a saved model named {name!r} already exists; choose another name")
+
+        job.phase = "prepare"
+        job.step = "Preparing to save the model"
+        job._override = 0.05
+
+        if bundle_type == "final":
+            frame = self._reload_frame(context)
+            job.n_models, job.n_splits, job.total_units = 1, 1, 1
+            job.current_model, job.current_split = model_name, 1
+            job.max_epochs = int(resolved["training"]["maximum_epochs"])
+            job.epoch = 0
+            job._override = None  # switch to epoch-based progress like a normal run
+            job.phase = "train"
+            job.step = f"Refitting {model_name} on all data"
+            job._counting = True
+            try:
+                refit = save_model.refit_final(
+                    frame, feature_cols, resolved, quantiles, seed,
+                    deterministic=bool(rconfig.get("deterministic", False)))
+            finally:
+                job._counting = False
+            state_dicts = [refit["state_dict"]]
+            member_scalers = [refit["scaler"]]
+            metrics = refit["metrics"]
+            build_args = refit["build_args"]
+            ranges = save_model.feature_ranges(frame, feature_cols)
+            training = save_model.training_stats(frame)
+        elif bundle_type == "single_split":
+            split_index = int(cfg.get("split_index", 0))
+            wpath = art / "weights" / f"{model_name}__{split_index}.pt"
+            if not wpath.exists():
+                raise RuntimeError(f"no saved weights for split {split_index}")
+            state_dicts = [torch.load(str(wpath), weights_only=True, map_location="cpu")]
+            member_scalers = [scalers_by_split[str(split_index)]]
+            build_args = save_model.build_args_for(model_name, resolved, len(feature_cols), quantiles)
+            metrics = self._split_metrics(results, model_name, split_index)
+        elif bundle_type == "ensemble":
+            n_splits = int(rconfig["n_splits"])
+            state_dicts, member_scalers = [], []
+            for s in range(n_splits):
+                wpath = art / "weights" / f"{model_name}__{s}.pt"
+                if not wpath.exists():
+                    raise RuntimeError(f"missing weights for split {s}; cannot build the ensemble")
+                state_dicts.append(torch.load(str(wpath), weights_only=True, map_location="cpu"))
+                member_scalers.append(scalers_by_split[str(s)])
+            build_args = save_model.build_args_for(model_name, resolved, len(feature_cols), quantiles)
+            metrics = results["summaries"].get(model_name, {})
+        else:
+            raise RuntimeError(f"unknown bundle type {bundle_type!r}")
+
+        job.phase = "report"
+        job.step = "Writing the model bundle"
+        job._override = 0.95
+        save_model.build_bundle(
+            out_path, bundle_type=bundle_type, model_name=model_name, build_args=build_args,
+            feature_names=feature_cols, quantiles=quantiles, state_dicts=state_dicts,
+            scalers=member_scalers, feature_ranges=ranges, training=training,
+            event_mapping=event_mapping, metrics=metrics, time_unit=time_unit, seed=seed)
+        meta = model_io.read_meta(out_path)
+        job.results = {
+            "kind": "save",
+            "bundle_name": name,
+            "bundle_file": out_path.name,
+            "summary": model_io.summarize(meta),
+            "_bundle_path": str(out_path),
+        }
+
+    # ----------------------------------------------------------------- predict
+    def _resolve_bundle_path(self, cfg: dict) -> Path:
+        ref = cfg.get("model_ref") or {}
+        if ref.get("path"):
+            p = Path(ref["path"])
+            if not p.exists():
+                raise RuntimeError("the uploaded model file was not found")
+            return p
+        if ref.get("name"):
+            p = paths.MODELS_DIR / f"{_safe_name(ref['name'])}.cnqmodel"
+            if not p.exists():
+                raise RuntimeError(f"saved model {ref['name']!r} was not found")
+            return p
+        raise RuntimeError("no model was selected to predict with")
+
+    def _execute_predict(self, job: Job):
+        import model_io
+        import predict as predict_mod
+        import predict_report
+
+        cfg = job.config
+        bundle_path = self._resolve_bundle_path(cfg)
+        job.phase = "prepare"
+        job.step = "Loading the saved model"
+        job._override = 0.05
+        bundle = model_io.load_bundle(bundle_path)
+
+        raw = pipeline.load_frame(cfg["csv_path"])
+
+        def cb(step, frac):
+            job.step = step
+            job._override = 0.05 + 0.75 * float(frac)
+
+        result = predict_mod.run_prediction(
+            bundle, raw, cfg.get("feature_map") or {},
+            id_col=cfg.get("id_col") or None, time_col=cfg.get("time_col") or None,
+            event_col=cfg.get("event_col") or None, event_positive=cfg.get("event_positive"),
+            progress=cb)
+
+        job.phase = "report"
+        job.step = "Building the prediction report"
+        job._override = 0.9
+        artifacts = predict_report.build(job.dir, bundle, result, cfg)
+        job.results = {"kind": "predict", **artifacts}
+
+
+def _safe_name(name: str) -> str:
+    import model_io
+    return model_io.safe_name(name)
 
 
 def _json_default(obj):

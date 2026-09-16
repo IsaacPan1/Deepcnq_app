@@ -119,6 +119,32 @@ def prepare(frame: pd.DataFrame, feature_cols: list[str], ratio: tuple[float, fl
                         list(feature_cols), split_seed)
 
 
+def prepare_all(frame: pd.DataFrame, feature_cols: list[str], valid_frac: float,
+                seed: int, epsilon: float = 0.005):
+    """Single train/valid split over ALL rows, for refitting a final model.
+
+    Used when saving a "final" bundle: the chosen architecture is retrained on
+    everything, holding out ``valid_frac`` (default 15%) purely for early
+    stopping. The scaler and censoring KM are fitted on the train part only, as
+    in :func:`prepare`. Returns ``(train, valid, scaler, km)`` -- no test set.
+    """
+    train, valid = train_test_split(frame, test_size=valid_frac, random_state=seed)
+    scaler = StandardScaler().fit(train[feature_cols])
+    km = CensoringKM(epsilon).fit(train.duration, train.event)
+
+    def pack(part: pd.DataFrame) -> dict:
+        time, event = part.duration.to_numpy(float), part.event.to_numpy(int)
+        return {
+            "X": scaler.transform(part[feature_cols]).astype("float32"),
+            "time": time,
+            "event": event,
+            "weights": km.weights(time, event).astype("float32"),
+            "subject_id": part.subject_id.to_numpy(),
+        }
+
+    return pack(train), pack(valid), scaler, km
+
+
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
@@ -257,6 +283,9 @@ class TrainOutput:
     # kept only for the representative (first) split to power detailed plots
     keep_model: Any = None
     prepared: Any = None
+    # CPU copy of the trained weights, always captured so a later "save model"
+    # step can bundle the exact in-session model (single split / ensemble).
+    state_dict: Any = None
 
 
 def train_model_on_split(model_name: str, resolved: dict, prepared: PreparedData,
@@ -278,12 +307,14 @@ def train_model_on_split(model_name: str, resolved: dict, prepared: PreparedData
     )
     test_pred = _predict_original(model, prepared.test["X"], device)
     metrics = evaluate_split(prepared, test_pred, quantiles, include_unoc=include_unoc)
+    cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
     return TrainOutput(
         model_name=model_name, split_index=split_index, best_epoch=state["best_epoch"],
         epochs_ran=state["epochs_ran"], early_stopped=state["early_stopped"],
         history=state["history"], metrics=metrics, test_pred=test_pred, quantiles=quantiles,
         keep_model=model if keep_for_plots else None,
         prepared=prepared if keep_for_plots else None,
+        state_dict=cpu_state,
     )
 
 
