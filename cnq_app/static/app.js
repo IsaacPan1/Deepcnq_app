@@ -1108,6 +1108,7 @@ function buildPredictMapping() {
   fillColSelect($("p-id-col"), cols, true);
   fillColSelect($("p-time-col"), cols, true);
   fillColSelect($("p-event-col"), cols, true);
+  autoSelectByName($("p-id-col"), cols, /^(subject_?id|patient_?id|case_?id|id)$|_id$/i);
   autoSelectByName($("p-time-col"), cols, /time|surv|dur|month|day|year|follow|fu/i);
   autoSelectByName($("p-event-col"), cols, /event|status|death|died|dead|censor|relaps|recur/i);
 }
