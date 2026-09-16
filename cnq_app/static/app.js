@@ -22,6 +22,8 @@ const state = {
   jobId: null,
   poll: null,
   vTimer: null,
+  ready: false,          // scientific stack + repo available (health check passed)
+  healthMsg: "",         // why uploads are blocked, shown inline when not ready
 };
 
 const $ = (id) => document.getElementById(id);
@@ -72,6 +74,8 @@ async function api(path, opts) {
 }
 
 // ---- init ----
+// Returns {ok, msg}: ok=false means the scientific stack/repo isn't ready, and
+// msg is a short inline explanation to show where the user tries to load data.
 async function checkHealth() {
   try {
     const h = await api("/api/health");
@@ -81,29 +85,37 @@ async function checkHealth() {
         "cannot train. Place it at <code>../deepcnq</code> next to this app, or set the " +
         "<code>CNQ_REPO</code> environment variable, then reload.";
       banner.classList.remove("hidden");
-      return false;
+      return { ok: false, msg: "Can't load data: the deepcnq repository wasn't found — see the banner above, fix it and reload." };
     }
     if (!h.ok) {
+      const pkgs = (h.missing_pip || []);
       banner.innerHTML = "Missing Python package(s): " +
-        (h.missing_pip || []).map((p) => `<code>${p}</code>`).join(", ") +
+        pkgs.map((p) => `<code>${p}</code>`).join(", ") +
         ". Install them, then reload — training will fail until they are available.";
       banner.classList.remove("hidden");
-      return false;
+      return { ok: false, msg: "Can't load data: missing Python package(s) — " +
+        pkgs.join(", ") + ". Fix the environment and reload." };
     }
   } catch (e) { /* health check itself failing shouldn't block the page */ }
-  return true;
+  return { ok: true, msg: "" };
 }
 
 async function init() {
-  const healthy = await checkHealth();
-  if (!healthy) return;  // config/run need the scientific stack
-  state.config = await api("/api/config");
-  buildModelChips();
-  buildPresetSelect();
+  const health = await checkHealth();
+  state.ready = health.ok;
+  state.healthMsg = health.msg;
+  // Wire the upload affordances unconditionally so the dropzone and the "Use
+  // sample data" button always respond — when the stack isn't ready they show
+  // state.healthMsg instead of failing silently.
   $("file-input").addEventListener("change", onUpload);
+  $("use-sample").addEventListener("click", useSample);
   const dz = document.querySelector(".dropzone");
   ["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, () => dz.classList.add("is-over")));
   ["dragleave", "drop"].forEach((t) => dz.addEventListener(t, () => dz.classList.remove("is-over")));
+  if (!health.ok) return;  // the rest (config, model/preset chips, run) needs the stack
+  state.config = await api("/api/config");
+  buildModelChips();
+  buildPresetSelect();
   document.querySelectorAll('input[name=mode]').forEach((r) =>
     r.addEventListener("change", onModeChange));
   $("quantile-grid").addEventListener("change", onQuantileChange);
@@ -163,11 +175,41 @@ function applySuggestion(name) {
 
 // ---- upload ----
 async function onUpload(ev) {
-  const file = ev.target.files[0];
+  await handleFile(ev.target.files[0]);
+}
+
+// Fetch the bundled sample CSV and run it through the same upload flow, so the
+// user can try the app with one click (no download-then-drag round trip).
+async function useSample() {
+  const status = $("upload-status");
+  if (!state.ready) { blockedMsg(status); return; }
+  status.classList.remove("is-error");
+  status.textContent = "Loading sample data…";
+  try {
+    const res = await fetch("/api/sample");
+    if (!res.ok) throw new Error((await res.text()) || res.statusText);
+    const blob = await res.blob();
+    await handleFile(new File([blob], "sample_survival.csv", { type: "text/csv" }));
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Could not load sample data: " + e.message;
+  }
+}
+
+function blockedMsg(status) {
+  status.classList.add("is-error");
+  status.textContent = state.healthMsg ||
+    "The app isn't ready yet — check the message at the top of the page, then reload.";
+}
+
+// Upload a File (from the picker, a drop, or the sample button) and open the
+// mapping step. Refuses with a clear message when the stack isn't ready.
+async function handleFile(file) {
   if (!file) return;
   const status = $("upload-status");
   const dz = document.querySelector(".dropzone");
   status.classList.remove("is-error");
+  if (!state.ready) { blockedMsg(status); return; }
   status.textContent = `Uploading ${file.name}…`;
   dz.querySelector(".dz-title").textContent = file.name;
   dz.querySelector(".dz-hint").textContent = "Choose a different file";
