@@ -24,6 +24,19 @@ const state = {
   vTimer: null,
   ready: false,          // scientific stack + repo available (health check passed)
   healthMsg: "",         // why uploads are blocked, shown inline when not ready
+  // save-model panel (Train results)
+  runModels: [],         // models the finished run trained (for the Save panel)
+  runSplits: 1,          // repeated splits the finished run used
+  saveJobId: null,
+  // predict tab
+  predictModel: null,    // {name} for a saved bundle or {path} for an uploaded one
+  predictSummary: null,  // model summary (features, quantiles, training size, ...)
+  predictModels: [],     // saved-model list from /api/models
+  predictCsvPath: null,
+  predictColumns: [],
+  predictLastValidation: null,
+  predictJobId: null,
+  vpTimer: null,         // predict-validation debounce
 };
 
 const $ = (id) => document.getElementById(id);
@@ -109,9 +122,13 @@ async function init() {
   // state.healthMsg instead of failing silently.
   $("file-input").addEventListener("change", onUpload);
   $("use-sample").addEventListener("click", useSample);
-  const dz = document.querySelector(".dropzone");
-  ["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, () => dz.classList.add("is-over")));
-  ["dragleave", "drop"].forEach((t) => dz.addEventListener(t, () => dz.classList.remove("is-over")));
+  // Drag-over styling for every dropzone (train upload, predict model, predict data).
+  document.querySelectorAll(".dropzone").forEach((dz) => {
+    ["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, () => dz.classList.add("is-over")));
+    ["dragleave", "drop"].forEach((t) => dz.addEventListener(t, () => dz.classList.remove("is-over")));
+  });
+  initTabs();
+  initPredict();
   if (!health.ok) return;  // the rest (config, model/preset chips, run) needs the stack
   state.config = await api("/api/config");
   buildModelChips();
@@ -563,6 +580,8 @@ async function onRun() {
   $("run-error").textContent = ""; delete $("run-error").dataset.gate;
   $("step-results").classList.add("hidden");
   const cfg = collectConfig();
+  state.runModels = [...cfg.models];   // remembered for the Save panel on the results
+  state.runSplits = cfg.n_splits;
   try {
     const res = await api("/api/run", {
       method: "POST",
@@ -631,9 +650,460 @@ function showResults() {
   $("dl-zip").href = "/api/zip?id=" + state.jobId;
   $("report-frame").src = "/api/report?id=" + state.jobId;
   $("step-results").classList.remove("hidden");
+  initSavePanel();
   $("step-results").scrollIntoView({ behavior: "smooth" });
 }
 
 function revealFrom(id) { $(id).classList.remove("hidden"); }
+
+// ===========================================================================
+// Tabs
+// ===========================================================================
+function initTabs() {
+  $("tab-train").addEventListener("click", () => showTab("train"));
+  $("tab-predict").addEventListener("click", () => showTab("predict"));
+}
+
+function showTab(which) {
+  const train = which === "train";
+  $("train-view").classList.toggle("hidden", !train);
+  $("predict-view").classList.toggle("hidden", train);
+  $("tab-train").classList.toggle("on", train);
+  $("tab-predict").classList.toggle("on", !train);
+  $("tab-train").setAttribute("aria-selected", String(train));
+  $("tab-predict").setAttribute("aria-selected", String(!train));
+  if (!train) loadSavedModels();  // keep the saved-model list fresh when opening Predict
+}
+
+// ===========================================================================
+// Shared helpers for background (save / predict) jobs
+// ===========================================================================
+function pollJob(jobId, cb) {
+  const timer = setInterval(async () => {
+    let s;
+    try { s = await api("/api/status?id=" + jobId); } catch { return; }
+    if (cb.onProgress) cb.onProgress(s);
+    if (["done", "cancelled", "error"].includes(s.state)) {
+      clearInterval(timer);
+      if (s.state === "done" && cb.onDone) cb.onDone(s);
+      else if (s.state === "error" && cb.onError) cb.onError(s.error || "failed");
+      else if (s.state === "cancelled" && cb.onCancelled) cb.onCancelled(s);
+    }
+  }, 700);
+  return timer;
+}
+
+function renderProgress(wrapId, stepId, fillId, detailId, s) {
+  const wrap = $(wrapId);
+  wrap.classList.remove("hidden");
+  wrap.dataset.state = s.state;
+  $(stepId).textContent = s.step + (s.state === "cancelled" ? " (cancelled)" : "");
+  $(fillId).style.width = Math.round((s.progress || 0) * 100) + "%";
+  const spinner = wrap.querySelector(".spinner");
+  if (spinner) spinner.style.visibility = ["pending", "running"].includes(s.state) ? "visible" : "hidden";
+  if (detailId && $(detailId)) $(detailId).textContent = "Elapsed " + formatElapsed(s.elapsed);
+}
+
+function fillTable(tbl, columns, rows) {
+  tbl.innerHTML = "";
+  const head = document.createElement("tr");
+  (columns || []).forEach((c) => {
+    const th = document.createElement("th"); th.textContent = c; head.appendChild(th);
+  });
+  tbl.appendChild(head);
+  (rows || []).forEach((row) => {
+    const tr = document.createElement("tr");
+    row.forEach((v) => {
+      const td = document.createElement("td");
+      td.textContent = v === null || v === undefined ? ""
+        : (typeof v === "number" && !Number.isInteger(v) ? (+v).toPrecision(4) : v);
+      tr.appendChild(td);
+    });
+    tbl.appendChild(tr);
+  });
+}
+
+function fillColSelect(sel, cols, withNone) {
+  sel.innerHTML = "";
+  if (withNone) sel.appendChild(new Option("(none)", ""));
+  cols.forEach((c) => sel.appendChild(new Option(c, c)));
+}
+
+function autoSelectByName(sel, cols, re) {
+  const m = cols.find((c) => re.test(c));
+  if (m) sel.value = m;
+}
+
+function vItem(icon, message) {
+  const div = document.createElement("div");
+  div.className = "v-item";
+  div.innerHTML = `<span class="v-icon"></span><span></span>`;
+  div.querySelector(".v-icon").textContent = icon;
+  div.querySelector("span:last-child").textContent = message;
+  return div;
+}
+
+// ===========================================================================
+// Save model panel (on the Train results)
+// ===========================================================================
+function initSavePanel() {
+  const sel = $("save-model");
+  sel.innerHTML = "";
+  (state.runModels || []).forEach((m) => {
+    const info = MODEL_INFO[m] || { name: m };
+    sel.appendChild(new Option(info.name || m, m));
+  });
+  const split = $("save-split");
+  split.innerHTML = "";
+  for (let i = 0; i < (state.runSplits || 1); i++) {
+    split.appendChild(new Option("Split " + (i + 1), String(i)));
+  }
+  $("save-type").onchange = onSaveTypeChange;
+  $("save-btn").onclick = onSave;
+  onSaveTypeChange();
+  $("save-error").textContent = "";
+  $("save-result").classList.add("hidden");
+  $("save-progress").classList.add("hidden");
+  $("save-panel").classList.remove("hidden");
+}
+
+function onSaveTypeChange() {
+  $("save-split-wrap").classList.toggle("hidden", $("save-type").value !== "single_split");
+}
+
+async function onSave() {
+  const name = $("save-name").value.trim();
+  $("save-error").textContent = "";
+  if (!name) { $("save-error").textContent = "Enter a name for the model."; return; }
+  if (!state.jobId) { $("save-error").textContent = "Train a model first."; return; }
+  const body = {
+    source_job_id: state.jobId,
+    model: $("save-model").value,
+    bundle_type: $("save-type").value,
+    name,
+  };
+  if (body.bundle_type === "single_split") body.split_index = +$("save-split").value;
+  $("save-btn").disabled = true;
+  $("save-result").classList.add("hidden");
+  try {
+    const res = await api("/api/save", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    state.saveJobId = res.job_id;
+    pollJob(res.job_id, {
+      onProgress: (s) => renderProgress("save-progress", "save-progress-step",
+        "save-bar-fill", "save-progress-detail", s),
+      onDone: async () => {
+        $("save-btn").disabled = false;
+        let info = {};
+        try { info = await api("/api/results?id=" + state.saveJobId); } catch { /* keep name */ }
+        const dlName = info.bundle_name || name;
+        $("save-result").classList.remove("hidden");
+        $("save-result").innerHTML =
+          `Saved <b>${escapeHtml(dlName)}</b>. ` +
+          `<a href="/api/models/download?name=${encodeURIComponent(dlName)}" download>` +
+          `Download ${escapeHtml(dlName)}.cnqmodel</a> — it now appears in the Predict tab.`;
+      },
+      onError: (e) => { $("save-btn").disabled = false; $("save-error").textContent = "Save failed: " + e; },
+    });
+  } catch (e) {
+    $("save-btn").disabled = false;
+    $("save-error").textContent = "Save failed: " + e.message;
+  }
+}
+
+// ===========================================================================
+// Predict tab
+// ===========================================================================
+function initPredict() {
+  $("p-refresh-models").addEventListener("click", loadSavedModels);
+  $("p-model-select").addEventListener("change", onPredictModelSelect);
+  $("p-model-file").addEventListener("change", onPredictModelUpload);
+  $("p-file-input").addEventListener("change", onPredictDataUpload);
+  ["p-id-col", "p-time-col", "p-event-col"].forEach((id) =>
+    $(id).addEventListener("change", schedulePredictValidate));
+  $("p-run-btn").addEventListener("click", onPredictRun);
+  $("p-cancel-btn").addEventListener("click", onPredictCancel);
+}
+
+async function loadSavedModels() {
+  try {
+    const res = await api("/api/models");
+    state.predictModels = res.models || [];
+  } catch { state.predictModels = []; }
+  const sel = $("p-model-select");
+  const previous = sel.value;
+  sel.innerHTML = "";
+  const usable = state.predictModels.filter((m) => !m.error);
+  sel.appendChild(new Option(usable.length ? "— choose a saved model —" : "— no saved models yet —", ""));
+  usable.forEach((m) => sel.appendChild(
+    new Option(`${m.name} — ${m.model} (${m.bundle_type})`, m.name)));
+  if (previous && usable.some((m) => m.name === previous)) sel.value = previous;
+}
+
+function onPredictModelSelect() {
+  const name = $("p-model-select").value;
+  const status = $("p-model-status");
+  status.classList.remove("is-error");
+  if (!name) { $("p-model-summary").classList.add("hidden"); return; }
+  const m = state.predictModels.find((x) => x.name === name);
+  state.predictModel = { name };
+  state.predictSummary = m;
+  status.textContent = "";
+  renderModelSummary(m);
+  onModelChosen();
+}
+
+async function onPredictModelUpload(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const status = $("p-model-status");
+  status.classList.remove("is-error");
+  if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
+  status.textContent = `Uploading ${file.name}…`;
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await api("/api/predict/upload-model", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", "X-Filename": file.name },
+      body: buf,
+    });
+    state.predictModel = { path: res.model_path };
+    state.predictSummary = res.summary;
+    status.textContent = `Loaded ${file.name}.`;
+    renderModelSummary(res.summary);
+    onModelChosen();
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Could not load model: " + e.message;
+  }
+}
+
+function renderModelSummary(m) {
+  const box = $("p-model-summary");
+  if (!m) { box.classList.add("hidden"); return; }
+  const rows = [
+    ["Model", m.model],
+    ["What it is", (m.bundle_type || "") + (m.n_members ? ` (${m.n_members} member${m.n_members === 1 ? "" : "s"})` : "")],
+    ["Trained on", `${m.n ?? "—"} subjects · ${m.n_events ?? "—"} events · ${m.censoring_pct ?? "—"}% censored`],
+    ["Features", (m.features || []).join(", ") || "—"],
+    ["Quantiles", (m.quantiles || []).map((q) => +q).join(", ") || "—"],
+    ["Time unit", m.time_unit || "—"],
+    ["Saved", m.created_at || "—"],
+    ["deepcnq", m.deepcnq || "—"],
+  ];
+  box.innerHTML = "<table>" + rows.map(([l, v]) =>
+    `<tr><td class="lbl">${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("") + "</table>";
+  box.classList.remove("hidden");
+}
+
+// A model is chosen: reveal the data step, and re-validate if data is already loaded.
+function onModelChosen() {
+  $("p-step-data").classList.remove("hidden");
+  if (state.predictCsvPath) { buildPredictMapping(); schedulePredictValidate(); }
+}
+
+async function onPredictDataUpload(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const status = $("p-upload-status");
+  const dz = $("p-file-input").closest(".dropzone");
+  status.classList.remove("is-error");
+  if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
+  status.textContent = `Uploading ${file.name}…`;
+  try {
+    const buf = await file.arrayBuffer();
+    const info = await api("/api/predict/upload-data", {
+      method: "POST",
+      headers: { "Content-Type": "text/csv", "X-Filename": file.name },
+      body: buf,
+    });
+    state.predictCsvPath = info.csv_path;
+    state.predictColumns = info.columns;
+    status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
+    dz.querySelector(".dz-title").textContent = file.name;
+    dz.querySelector(".dz-hint").textContent = "Choose a different file";
+    dz.classList.add("has-file");
+    fillTable($("p-preview-table"), info.preview.columns, info.preview.rows);
+    $("p-preview-wrap").classList.remove("hidden");
+    buildPredictMapping();
+    $("p-step-map").classList.remove("hidden");
+    $("p-step-run").classList.remove("hidden");
+    schedulePredictValidate();
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Upload failed: " + e.message;
+  }
+}
+
+function buildPredictMapping() {
+  const features = (state.predictSummary && state.predictSummary.features) || [];
+  const cols = state.predictColumns || [];
+  const lower = {};
+  cols.forEach((c) => { lower[c.toLowerCase()] = c; });
+
+  const wrap = $("p-feature-map");
+  wrap.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "grid-custom";
+  features.forEach((f) => {
+    const label = document.createElement("label");
+    label.textContent = f;
+    const sel = document.createElement("select");
+    sel.dataset.feature = f;
+    sel.appendChild(new Option("— none —", ""));
+    cols.forEach((c) => sel.appendChild(new Option(c, c)));
+    sel.value = cols.includes(f) ? f : (lower[f.toLowerCase()] || "");
+    sel.addEventListener("change", schedulePredictValidate);
+    label.appendChild(sel);
+    grid.appendChild(label);
+  });
+  wrap.appendChild(grid);
+
+  fillColSelect($("p-id-col"), cols, true);
+  fillColSelect($("p-time-col"), cols, true);
+  fillColSelect($("p-event-col"), cols, true);
+  autoSelectByName($("p-time-col"), cols, /time|surv|dur|month|day|year|follow|fu/i);
+  autoSelectByName($("p-event-col"), cols, /event|status|death|died|dead|censor|relaps|recur/i);
+}
+
+function currentFeatureMap() {
+  const map = {};
+  $("p-feature-map").querySelectorAll("select[data-feature]").forEach((sel) => {
+    if (sel.value) map[sel.dataset.feature] = sel.value;
+  });
+  return map;
+}
+
+function schedulePredictValidate() {
+  clearTimeout(state.vpTimer);
+  state.vpTimer = setTimeout(runPredictValidation, 250);
+}
+
+async function runPredictValidation() {
+  if (!state.predictCsvPath || !state.predictModel) return;
+  const body = {
+    model_ref: state.predictModel,
+    csv_path: state.predictCsvPath,
+    feature_map: currentFeatureMap(),
+    id_col: $("p-id-col").value || null,
+    time_col: $("p-time-col").value || null,
+    event_col: $("p-event-col").value || null,
+  };
+  try {
+    const res = await api("/api/predict/validate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    state.predictLastValidation = res;
+    renderPredictValidation(res);
+  } catch (e) {
+    $("p-run-error").textContent = "Could not validate: " + e.message;
+  }
+  updatePredictGating();
+}
+
+function renderPredictValidation(res) {
+  $("p-validation-panel").classList.remove("hidden");
+  const errBox = $("p-v-errors");
+  errBox.innerHTML = "";
+  (res.errors || []).forEach((e) => errBox.appendChild(vItem("✕", e.message)));
+  const warnBox = $("p-v-warnings");
+  warnBox.innerHTML = "";
+  (res.warnings || []).forEach((w) => warnBox.appendChild(vItem("!", w.message)));
+  const s = res.summary || {};
+  $("p-v-summary").innerHTML =
+    `Rows: <b>${fmtNum(s.rows_used)}</b> to predict · ` +
+    `<span>${fmtNum(s.rows_excluded)} excluded</span> · ` +
+    `Model features: <b>${fmtNum(s.n_features)}</b>` +
+    (s.has_external ? ` · <span class="ok">external validation on</span>` : "");
+}
+
+function canPredict() {
+  const v = state.predictLastValidation;
+  return !!(v && (v.errors || []).length === 0 && state.predictCsvPath && state.predictModel);
+}
+
+function updatePredictGating() {
+  $("p-run-btn").disabled = !canPredict();
+}
+
+async function onPredictRun() {
+  if (!canPredict()) { updatePredictGating(); return; }
+  $("p-run-error").textContent = "";
+  $("p-step-results").classList.add("hidden");
+  const body = {
+    model_ref: state.predictModel,
+    csv_path: state.predictCsvPath,
+    feature_map: currentFeatureMap(),
+    id_col: $("p-id-col").value || null,
+    time_col: $("p-time-col").value || null,
+    event_col: $("p-event-col").value || null,
+  };
+  try {
+    const res = await api("/api/predict/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    state.predictJobId = res.job_id;
+    $("p-run-btn").disabled = true;
+    $("p-cancel-btn").classList.remove("hidden");
+    $("p-progress-wrap").classList.remove("hidden");
+    $("p-progress-wrap").dataset.state = "pending";
+    $("p-bar-fill").style.width = "0%";
+    pollJob(res.job_id, {
+      onProgress: (s) => renderProgress("p-progress-wrap", "p-progress-step",
+        "p-bar-fill", "p-progress-detail", s),
+      onDone: showPredictResults,
+      onError: (e) => {
+        $("p-run-btn").disabled = false;
+        $("p-cancel-btn").classList.add("hidden");
+        $("p-run-error").textContent = "Failed: " + e;
+      },
+      onCancelled: () => {
+        $("p-run-btn").disabled = false;
+        $("p-cancel-btn").classList.add("hidden");
+      },
+    });
+  } catch (e) {
+    $("p-run-error").textContent = e.message;
+  }
+}
+
+async function onPredictCancel() {
+  if (!state.predictJobId) return;
+  await api("/api/cancel?id=" + state.predictJobId, { method: "POST" });
+  $("p-progress-step").textContent = "Cancelling…";
+}
+
+async function showPredictResults() {
+  $("p-run-btn").disabled = false;
+  $("p-cancel-btn").classList.add("hidden");
+  let r;
+  try { r = await api("/api/results?id=" + state.predictJobId); }
+  catch (e) { $("p-run-error").textContent = "Could not load results: " + e.message; return; }
+
+  let summary = `${fmtNum(r.n)} subject(s) predicted`;
+  if (r.rows_excluded) summary += ` · ${fmtNum(r.rows_excluded)} excluded (missing features)`;
+  if (r.out_of_range_count) summary += ` · ${fmtNum(r.out_of_range_count)} flagged out-of-range`;
+  const ext = r.external;
+  if (ext && ext.available) {
+    summary += ` · external: 80% coverage ${(ext.coverage_80 * 100).toFixed(0)}%`;
+    if (ext.uno_c != null) summary += `, Uno C ${(+ext.uno_c).toFixed(3)}`;
+    summary += `, pinball ${(+ext.pinball_mean).toFixed(3)}`;
+  } else if (ext && !ext.available) {
+    summary += ` · external validation not available`;
+  }
+  $("p-result-summary").textContent = summary;
+
+  fillTable($("p-pred-table"), r.columns, r.preview_rows);
+  $("p-dl-predictions").href = "/api/predictions?id=" + state.predictJobId;
+  $("p-dl-report").href = "/api/report?id=" + state.predictJobId;
+  $("p-dl-zip").href = "/api/zip?id=" + state.predictJobId;
+  $("p-report-frame").src = "/api/report?id=" + state.predictJobId;
+  $("p-step-results").classList.remove("hidden");
+  $("p-step-results").scrollIntoView({ behavior: "smooth" });
+}
 
 init().catch((e) => alert("Init failed: " + e.message));

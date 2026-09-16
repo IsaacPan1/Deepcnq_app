@@ -8,6 +8,8 @@ run mid-fit when the user cancels -- raising inside it unwinds ``fit`` cleanly.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import threading
 import time
 import traceback
@@ -27,6 +29,9 @@ import save_model
 from deepquantreg.training import trainer as _trainer
 
 RUNS_DIR = paths.OUTPUT_DIR
+# Cleanup: keep only the most recent N job folders on disk. Configurable via the
+# CNQ_KEEP_RUNS env var; 0 or negative disables pruning.
+KEEP_RUNS = int(os.environ.get("CNQ_KEEP_RUNS", "20"))
 
 
 class Cancelled(Exception):
@@ -166,6 +171,24 @@ class JobManager:
         job.cancel_event.set()
         return True
 
+    def _prune_runs(self, keep: int = KEEP_RUNS) -> None:
+        """Keep only the most recent ``keep`` job folders on disk (by mtime).
+
+        Job folders are 12-char hex ids; other entries under the runs dir (e.g.
+        ``uploads``) are left alone. Best-effort -- never raises into a job.
+        """
+        if keep <= 0:
+            return
+        try:
+            dirs = [d for d in RUNS_DIR.iterdir()
+                    if d.is_dir() and len(d.name) == 12
+                    and all(c in "0123456789abcdef" for c in d.name)]
+            dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        except OSError:
+            return
+        for d in dirs[keep:]:
+            shutil.rmtree(d, ignore_errors=True)
+
     # ----------------------------------------------------------------- run
     def _run(self, job: Job):
         global _ACTIVE
@@ -198,6 +221,7 @@ class JobManager:
             job.finished_at = time.time()
             job._counting = False
             _ACTIVE = None
+            self._prune_runs()
 
     def _execute(self, job: Job):
         cfg = job.config

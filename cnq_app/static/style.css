@@ -135,6 +135,26 @@ a:hover { color: var(--primary-hover); }
 }
 .banner code { background: rgba(125, 32, 22, .09); padding: 0 .3rem; border-radius: 4px; }
 
+/* ---------- Tabs ---------- */
+.tabs {
+  max-width: 980px;
+  margin: 1.4rem auto 0;
+  padding: 0 1.25rem;
+  display: flex;
+  gap: .5rem;
+}
+.tab {
+  background: var(--surface);
+  color: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: .5rem 1.4rem;
+  font-weight: 650;
+  font-size: .92rem;
+}
+.tab:hover { border-color: var(--primary); color: var(--primary); }
+.tab.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+
 /* ---------- Steps ---------- */
 .steps {
   max-width: 980px;
@@ -177,6 +197,10 @@ a:hover { color: var(--primary-hover); }
 #step-config .num  { --c: var(--q50); }
 #step-run .num     { --c: var(--q75); color: #1f3312; }
 #step-results .num { --c: var(--q90); color: #3d2a00; }
+#p-step-data .num    { --c: var(--q25); }
+#p-step-map .num     { --c: var(--q50); }
+#p-step-run .num     { --c: var(--q75); color: #1f3312; }
+#p-step-results .num { --c: var(--q90); color: #3d2a00; }
 
 /* Thread connecting the step markers */
 .card.step:has(+ .card.step:not(.hidden))::before {
@@ -438,7 +462,7 @@ tr:nth-child(even) td { background: var(--surface-2); }
 
 /* ---------- Results ---------- */
 .downloads { display: flex; flex-wrap: wrap; gap: .6rem; margin-bottom: 1rem; }
-iframe#report-frame {
+iframe#report-frame, iframe#p-report-frame {
   display: block;
   width: 100%;
   height: 820px;
@@ -446,6 +470,40 @@ iframe#report-frame {
   border-radius: var(--radius-sm);
   background: #fff;
 }
+
+/* Progress bars for the predict + save widgets share the training bar's look */
+#p-bar-fill, #save-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--q10), var(--q25) 30%, var(--q50) 55%, var(--q75) 80%, var(--q90));
+  transition: width .45s ease;
+}
+.progress[data-state="done"] #p-progress-step,
+.progress[data-state="done"] #save-progress-step { color: #137a66; }
+.progress[data-state="error"] #p-bar-fill,
+.progress[data-state="error"] #save-bar-fill { background: var(--danger); }
+.progress[data-state="cancelled"] #p-bar-fill,
+.progress[data-state="cancelled"] #save-bar-fill { background: #9aa6bf; }
+
+/* ---------- Model summary + save panel + predict mapping ---------- */
+.model-summary {
+  margin-top: .8rem;
+  padding: .3rem .9rem .6rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.model-summary table { font-size: .85rem; }
+.model-summary td { white-space: normal; vertical-align: top; }
+.model-summary td.lbl { font-weight: 650; color: var(--ink-2); width: 9.5rem; }
+
+.save-panel { margin-top: 1.4rem; padding-top: 1.1rem; border-top: 1px solid var(--line); }
+.save-panel .row { align-items: flex-end; }
+.save-action { display: flex; align-items: flex-end; padding-bottom: .05rem; }
+
+#p-feature-map .grid-custom { margin-top: .3rem; }
+#p-feature-map label { margin: .5rem 0 .25rem; }
 
 .foot {
   max-width: 980px;

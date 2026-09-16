@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/style.css?v=2">
 </head>
 <body>
 <header class="masthead">
@@ -33,7 +33,13 @@
 
 <div id="health-banner" class="banner hidden" role="alert"></div>
 
-<main class="steps">
+<nav class="tabs" role="tablist" aria-label="Mode">
+  <button class="tab on" id="tab-train" role="tab" aria-selected="true">Train a model</button>
+  <button class="tab" id="tab-predict" role="tab" aria-selected="false">Predict new subjects</button>
+</nav>
+
+<main>
+<div class="steps view" id="train-view">
   <!-- Step 1: data -->
   <section class="card step" id="step-data">
     <h2><span class="num">1</span> Upload data</h2>
@@ -205,11 +211,153 @@ S002,36.0,0,64,1.2,0</pre>
       <a id="dl-zip" class="btn btn-outline">Download results (.zip)</a>
     </div>
     <iframe id="report-frame" title="Run report"></iframe>
+
+    <div class="save-panel hidden" id="save-panel">
+      <h3>Save a model</h3>
+      <p class="muted">Bundle a trained model as a <code>.cnqmodel</code> file to reuse it in the Predict tab or share it.</p>
+      <div class="row">
+        <label>Model
+          <select id="save-model"></select>
+        </label>
+        <label>What to save
+          <select id="save-type">
+            <option value="final">Final model: refit on all data</option>
+            <option value="ensemble">Ensemble of the repeated-split models</option>
+            <option value="single_split">Single split</option>
+          </select>
+        </label>
+        <label id="save-split-wrap" class="hidden">Which split
+          <select id="save-split"></select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Name
+          <input type="text" id="save-name" placeholder="e.g. my-cohort-kan" maxlength="80">
+        </label>
+        <div class="save-action">
+          <button id="save-btn" class="primary">Save model</button>
+        </div>
+      </div>
+      <p id="save-error" class="error"></p>
+      <div id="save-progress" class="progress hidden" aria-live="polite">
+        <div class="progress-head">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="save-progress-step">Saving</span>
+        </div>
+        <div class="bar"><div id="save-bar-fill"></div></div>
+        <div id="save-progress-detail" class="progress-detail"></div>
+      </div>
+      <p id="save-result" class="status hidden"></p>
+    </div>
   </section>
+</div><!-- /train-view -->
+
+<div class="steps view hidden" id="predict-view">
+  <!-- P1: choose a model -->
+  <section class="card step" id="p-step-model">
+    <h2><span class="num">1</span> Choose a model</h2>
+    <div class="row">
+      <label>Saved models
+        <select id="p-model-select"></select>
+      </label>
+      <div class="save-action">
+        <button type="button" id="p-refresh-models" class="linklike">Refresh list</button>
+      </div>
+    </div>
+    <p class="lead">or upload a <code>.cnqmodel</code> file:</p>
+    <label class="dropzone" for="p-model-file">
+      <input type="file" id="p-model-file" accept=".cnqmodel">
+      <span class="dz-title">Choose a .cnqmodel file</span>
+      <span class="dz-hint">or drag it here</span>
+    </label>
+    <p id="p-model-status" class="status"></p>
+    <div id="p-model-summary" class="model-summary hidden"></div>
+  </section>
+
+  <!-- P2: upload new subjects -->
+  <section class="card step hidden" id="p-step-data">
+    <h2><span class="num">2</span> Upload new subjects</h2>
+    <p class="lead">A CSV of the subjects to predict for. It must contain the model's feature columns;
+      a time and event column are optional (for external validation).</p>
+    <label class="dropzone" for="p-file-input">
+      <input type="file" id="p-file-input" accept=".csv,text/csv">
+      <span class="dz-title">Choose a CSV file</span>
+      <span class="dz-hint">or drag it here</span>
+    </label>
+    <p id="p-upload-status" class="status"></p>
+    <div id="p-preview-wrap" class="hidden">
+      <h3>Preview</h3>
+      <div class="table-scroll"><table id="p-preview-table"></table></div>
+    </div>
+  </section>
+
+  <!-- P3: map columns -->
+  <section class="card step hidden" id="p-step-map">
+    <h2><span class="num">3</span> Map columns</h2>
+    <p class="field-label">Feature columns <span class="muted">auto-matched by name; every model feature is required</span></p>
+    <div id="p-feature-map"></div>
+    <div class="row">
+      <label>Subject ID column <span class="muted">optional; labels predictions</span>
+        <select id="p-id-col"></select>
+      </label>
+    </div>
+    <details class="data-format" id="p-external-block">
+      <summary>External validation <span class="muted">optional: map observed time &amp; event</span></summary>
+      <div class="data-format-body">
+        <p class="muted">If your new subjects have known outcomes, map them to score the predictions
+          (IPCW pinball, coverage, Uno C, calibration). The event column should be 0/1.</p>
+        <div class="row">
+          <label>Time column
+            <select id="p-time-col"></select>
+          </label>
+          <label>Event column <span class="muted">1 = event, 0 = censored</span>
+            <select id="p-event-col"></select>
+          </label>
+        </div>
+      </div>
+    </details>
+    <div id="p-validation-panel" class="validation hidden" aria-live="polite">
+      <div id="p-v-errors" class="v-group v-errors"></div>
+      <div id="p-v-warnings" class="v-group v-warnings"></div>
+      <div id="p-v-summary" class="v-summary"></div>
+    </div>
+  </section>
+
+  <!-- P4: run -->
+  <section class="card step hidden" id="p-step-run">
+    <h2><span class="num">4</span> Predict</h2>
+    <div class="actions">
+      <button id="p-run-btn" class="primary">Run prediction</button>
+      <button id="p-cancel-btn" class="ghost-danger hidden">Cancel</button>
+    </div>
+    <p id="p-run-error" class="error" role="status"></p>
+    <div id="p-progress-wrap" class="progress hidden" aria-live="polite">
+      <div class="progress-head">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="p-progress-step">Starting</span>
+      </div>
+      <div class="bar"><div id="p-bar-fill"></div></div>
+      <div id="p-progress-detail" class="progress-detail"></div>
+    </div>
+  </section>
+
+  <!-- P5: results -->
+  <section class="card step hidden" id="p-step-results">
+    <h2><span class="num">5</span> Predictions</h2>
+    <p id="p-result-summary" class="v-summary"></p>
+    <div class="downloads">
+      <a id="p-dl-predictions" class="btn">Download predictions (.csv)</a>
+      <a id="p-dl-report" class="btn btn-outline" target="_blank">Open report in new tab</a>
+      <a id="p-dl-zip" class="btn btn-outline">Download all (.zip)</a>
+    </div>
+    <div class="table-scroll"><table id="p-pred-table"></table></div>
+    <iframe id="p-report-frame" title="Prediction report"></iframe>
+  </section>
+</div><!-- /predict-view -->
 </main>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js"></script>
+<script src="/app.js?v=2"></script>
 </body>
 </html>
