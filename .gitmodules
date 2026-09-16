@@ -1,0 +1,4 @@
+[submodule "deepcnq"]
+	path = deepcnq
+	url = https://github.com/BIG-S2/deepcnq
+	branch = main
