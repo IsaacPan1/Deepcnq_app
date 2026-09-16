@@ -17,6 +17,38 @@ from deepquantreg.config import load_config
 APP_MODELS = ("KAN_gaps", "TransformerPS_gaps", "Transformer_KAN_gaps", "MLP_multiQ")
 TRANSFORMER_MODELS = ("TransformerPS_gaps", "Transformer_KAN_gaps")
 
+# Display labels the front end shows (mirror of MODEL_INFO in static/app.js). The
+# API stores/uses the internal names on the left; these let the server map a
+# display label back to its internal name for robustness.
+MODEL_DISPLAY = {
+    "KAN_gaps": "KAN-CNQ",
+    "TransformerPS_gaps": "Trans-CNQ",
+    "Transformer_KAN_gaps": "TransKAN-CNQ",
+    "MLP_multiQ_gaps": "MLP-CNQ",
+    "MLP_multiQ": "MLP multi-quantile",
+    "MLP_singleQ": "MLP single-quantile",
+}
+
+
+def resolve_model_name(name, allowed) -> "str | None":
+    """Map an internal or display model name to an internal name within ``allowed``.
+
+    Accepts the internal name (``KAN_gaps``), a case-insensitive variant, or the
+    UI display label (``KAN-CNQ``). Returns ``None`` when it cannot be resolved to
+    one of the ``allowed`` models, so callers can reject it cleanly.
+    """
+    if not name:
+        return None
+    allowed = list(allowed)
+    if name in allowed:
+        return name
+    by_lower = {a.lower(): a for a in allowed}
+    if name.lower() in by_lower:
+        return by_lower[name.lower()]
+    display_to_internal = {label.lower(): key for key, label in MODEL_DISPLAY.items()}
+    internal = display_to_internal.get(name.lower())
+    return internal if internal in allowed else None
+
 # Approximate size / censoring for each paper cohort, used only to label the
 # "Starting settings" options and to suggest the closest one. These are the
 # published figures for the public benchmark datasets; the app never combines

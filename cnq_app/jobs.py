@@ -540,7 +540,7 @@ class JobManager:
             job._counting = True
             try:
                 refit = save_model.refit_final(
-                    frame, feature_cols, resolved, quantiles, seed,
+                    model_name, frame, feature_cols, resolved, quantiles, seed,
                     deterministic=bool(rconfig.get("deterministic", False)))
             finally:
                 job._counting = False

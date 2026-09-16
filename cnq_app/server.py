@@ -487,19 +487,64 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_save(self):
         if not self._repo_ready():
             return
+        import model_io
+        import presets
+
         cfg = json.loads(self._read_body() or b"{}")
-        for key in ("source_job_id", "model", "bundle_type", "name"):
-            if not cfg.get(key):
-                return self._error(f"missing '{key}'")
-        if cfg["bundle_type"] not in ("final", "ensemble", "single_split"):
-            return self._error("invalid bundle_type")
+
+        # source run must exist and have results
+        source = cfg.get("source_job_id")
+        if not source:
+            return self._error("missing 'source_job_id'")
+        results_path = paths.OUTPUT_DIR / str(source) / "results.json"
+        if not results_path.exists():
+            return self._error("that training run was not found (nothing to save)", 404)
+        rconfig = json.loads(results_path.read_text()).get("config", {})
+        run_models = list(rconfig.get("models", []))
+        n_splits = int(rconfig.get("n_splits", 1))
+
+        # model: accept internal OR display name, but it must be one this run trained
+        if not cfg.get("model"):
+            return self._error("missing 'model'")
+        model = presets.resolve_model_name(cfg["model"], run_models)
+        if not model:
+            return self._error(
+                f"unknown model {cfg['model']!r}; this run trained: "
+                f"{', '.join(run_models) or '(none)'}")
+
+        # bundle type
+        bundle_type = cfg.get("bundle_type")
+        if bundle_type not in ("final", "ensemble", "single_split"):
+            return self._error("invalid 'bundle_type'; choose final, ensemble or single_split")
+
+        # split index (only for single_split), must be in range
+        split_index = None
+        if bundle_type == "single_split":
+            try:
+                split_index = int(cfg.get("split_index"))
+            except (TypeError, ValueError):
+                return self._error("a single-split bundle needs a numeric 'split_index'")
+            if not 0 <= split_index < n_splits:
+                return self._error(
+                    f"'split_index' {cfg.get('split_index')} is out of range "
+                    f"(this run had {n_splits} split(s): 0..{n_splits - 1})")
+
+        # name must be provided and path-safe, and not already taken
+        try:
+            name = model_io.safe_name(cfg.get("name"))
+        except model_io.BundleError as exc:
+            return self._error(str(exc))
+        if (MODELS_DIR / f"{name}.cnqmodel").exists():
+            return self._error(f"a saved model named {name!r} already exists; choose another name", 409)
+
         manager = _get_manager()
         if manager.active() is not None:
             return self._error("a job is already running", 409)
-        try:
-            job = manager.start({"kind": "save", **cfg})
-        except Exception as exc:  # noqa: BLE001
-            return self._error(str(exc))
+        payload = {"kind": "save", "source_job_id": str(source), "model": model,
+                   "bundle_type": bundle_type, "name": name}
+        if split_index is not None:
+            payload["split_index"] = split_index
+        job = manager.start(payload)
         self._send_json({"job_id": job.id, **job.status()})
 
     # ---- predict ----

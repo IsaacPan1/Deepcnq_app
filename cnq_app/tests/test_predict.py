@@ -141,7 +141,7 @@ def test_ensemble_round_trip_and_non_crossing(trained, tmp_path):
 
 def test_final_refit_round_trip(trained, tmp_path):
     tr = trained
-    refit = save_model.refit_final(tr.frame, FEATURES, tr.resolved, tr.quantiles, tr.seed,
+    refit = save_model.refit_final(MODEL, tr.frame, FEATURES, tr.resolved, tr.quantiles, tr.seed,
                                    deterministic=True)
     path = tmp_path / "f.cnqmodel"
     common = _common(tr)

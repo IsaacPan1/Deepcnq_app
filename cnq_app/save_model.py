@@ -98,16 +98,21 @@ def build_bundle(path, *, bundle_type: str, model_name: str, build_args: dict,
 # --------------------------------------------------------------------------- #
 # final: refit on all data
 # --------------------------------------------------------------------------- #
-def refit_final(frame: pd.DataFrame, feature_cols: list[str], resolved: dict,
-                quantiles: list[float], seed: int, *, valid_frac: float = 0.15,
-                deterministic: bool = False, device: str = "cpu") -> dict:
-    """Retrain ``model`` on all rows (15% held out for early stopping).
+def refit_final(model_name: str, frame: pd.DataFrame, feature_cols: list[str],
+                resolved: dict, quantiles: list[float], seed: int, *,
+                valid_frac: float = 0.15, deterministic: bool = False,
+                device: str = "cpu") -> dict:
+    """Retrain ``model_name`` on all rows (15% held out for early stopping).
 
-    Returns ``{state_dict, scaler, metrics}``. ``state_dict`` is on CPU. The job
-    manager's per-epoch progress hook wraps ``fit`` automatically when this runs
-    inside a job; called bare (tests) it just trains.
+    ``model_name`` is passed explicitly -- the ``resolved`` architecture dict from
+    ``presets.resolve`` has no ``name`` key (the name is added at build time), so
+    deriving it from ``resolved`` would give ``None``. Returns
+    ``{state_dict, scaler, metrics, build_args}``; ``state_dict`` is on CPU. The
+    job manager's per-epoch progress hook wraps ``fit`` automatically when this
+    runs inside a job; called bare (tests) it just trains.
     """
-    model_name = resolved["architecture"].get("name") or resolved.get("name")
+    if not model_name:
+        raise ValueError("refit_final needs a model name")
     quantiles = [float(q) for q in quantiles]
     train, valid, scaler, km = pipeline.prepare_all(frame, feature_cols, valid_frac, seed)
 
