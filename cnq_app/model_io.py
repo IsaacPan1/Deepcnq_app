@@ -331,6 +331,7 @@ def summarize(meta: dict) -> dict:
         "censoring_pct": training.get("censoring_pct"),
         "n_features": len(meta.get("feature_names") or []),
         "features": list(meta.get("feature_names") or []),
+        "feature_ranges": meta.get("feature_ranges") or {},
         "quantiles": list(meta.get("quantiles") or []),
         "time_unit": meta.get("time_unit"),
         "deepcnq": (meta.get("deepcnq") or {}).get("version_str"),

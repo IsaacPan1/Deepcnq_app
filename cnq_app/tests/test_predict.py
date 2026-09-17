@@ -173,6 +173,52 @@ def test_validate_text_value_in_feature(trained, tmp_path):
     assert any(e["code"] == "feature_not_numeric" for e in res["errors"])
 
 
+def test_auto_map_exact_names(trained, tmp_path):
+    tr = trained
+    meta = model_io.read_meta(_single_bundle(tr, tmp_path / "s.cnqmodel"))
+    raw = _test_rows(tr, tr.preps[0])                      # columns are the exact feature names
+    res = predict.validate(meta, raw)
+    assert res["summary"]["n_matched"] == len(FEATURES)
+    assert not any(e["code"] == "missing_features" for e in res["errors"])
+
+
+def test_renamed_columns_with_manual_map_identical(trained, tmp_path):
+    tr = trained
+    loaded = model_io.load_bundle(_single_bundle(tr, tmp_path / "s.cnqmodel"))
+    raw = _test_rows(tr, tr.preps[0])
+    rename = {f: f"col{i}" for i, f in enumerate(FEATURES)}
+    renamed = raw.rename(columns=rename)
+    manual = {f: rename[f] for f in FEATURES}
+    a = predict.run_prediction(loaded, raw, {})
+    b = predict.run_prediction(loaded, renamed, manual)
+    assert np.allclose(np.asarray(a["pred_time"]), np.asarray(b["pred_time"]), atol=1e-6)
+
+
+def test_position_mapping_identical(trained, tmp_path):
+    tr = trained
+    loaded = model_io.load_bundle(_single_bundle(tr, tmp_path / "s.cnqmodel"))
+    raw = _test_rows(tr, tr.preps[0])
+    ordered = raw[FEATURES].copy()                          # same order, non-matching names
+    ordered.columns = [f"z{i}" for i in range(len(FEATURES))]
+    posmap = {f: f"z{i}" for i, f in enumerate(FEATURES)}   # what "match by position" produces
+    a = predict.run_prediction(loaded, raw, {})
+    b = predict.run_prediction(loaded, ordered, posmap)
+    assert np.allclose(np.asarray(a["pred_time"]), np.asarray(b["pred_time"]), atol=1e-6)
+
+
+def test_duplicate_mapping_is_rejected(trained, tmp_path):
+    tr = trained
+    path = _single_bundle(tr, tmp_path / "s.cnqmodel")
+    meta = model_io.read_meta(path)
+    loaded = model_io.load_bundle(path)
+    raw = _test_rows(tr, tr.preps[0])
+    dup = {FEATURES[0]: "feat_0", FEATURES[1]: "feat_0"}   # two features -> one column
+    res = predict.validate(meta, raw, dup)
+    assert any(e["code"] == "duplicate_mapping" for e in res["errors"])
+    with pytest.raises(ValueError):
+        predict.run_prediction(loaded, raw, dup)
+
+
 def test_external_validation_runs(trained, tmp_path):
     tr = trained
     loaded = model_io.load_bundle(_single_bundle(tr, tmp_path / "s.cnqmodel"))

@@ -37,7 +37,8 @@ def scaler_dict(scaler) -> dict:
 
 
 def feature_ranges(frame: pd.DataFrame, feature_cols: list[str]) -> dict:
-    return {f: {"min": float(frame[f].min()), "max": float(frame[f].max())}
+    return {f: {"min": float(frame[f].min()), "max": float(frame[f].max()),
+                "median": float(frame[f].median())}
             for f in feature_cols}
 
 

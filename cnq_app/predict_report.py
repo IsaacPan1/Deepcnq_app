@@ -244,6 +244,13 @@ def build_html(bundle, result: dict, images: dict[str, bytes]) -> str:
     pred_table = "".join(
         f"<tr><td class='lbl'>{html.escape(l)}</td><td>{v}</td></tr>" for l, v in pred_rows)
 
+    fmap = result.get("feature_map") or {}
+    mapping_rows = "".join(
+        f"<tr><td class='lbl'>{html.escape(str(f))}</td><td>{html.escape(str(fmap.get(f, '—')))}</td></tr>"
+        for f in (meta.get("feature_names") or []))
+    mapping_table = (f"<table class='metrics'><tr><th>Model feature</th>"
+                     f"<th>File column</th></tr>{mapping_rows}</table>")
+
     preview = _preview_table(result)
     external = result.get("external")
     external_html = ""
@@ -282,6 +289,9 @@ def build_html(bundle, result: dict, images: dict[str, bytes]) -> str:
 
 <h2>Prediction summary</h2>
 <table class="metrics">{pred_table}</table>
+
+<h2>Column mapping used</h2>
+<table class="metrics">{mapping_table}</table>
 
 <h2>Plots</h2>
 <div class="grid">{''.join(plots_html)}</div>
@@ -329,15 +339,9 @@ def build(job_dir: Path, bundle, result: dict, cfg: dict) -> dict:
     for name, data in images.items():
         (img_dir / f"{name}.png").write_bytes(data)
 
-    with zipfile.ZipFile(job_dir / "results.zip", "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("report.html", html_report)
-        zf.writestr("predictions.csv", result["predictions_csv"])
-        zf.writestr("model.json", json.dumps(bundle.meta, indent=2, default=str))
-        for name, data in images.items():
-            zf.writestr(f"plots/{name}.png", data)
-
     external = result.get("external")
-    return {
+    payload = {
+        "kind": "predict",
         "n": result["n"],
         "rows_excluded": result["rows_excluded"],
         "out_of_range_count": result["out_of_range_count"],
@@ -345,9 +349,24 @@ def build(job_dir: Path, bundle, result: dict, cfg: dict) -> dict:
         "quantiles": result["quantiles"],
         "columns": result["columns"],
         "preview_rows": result["preview_rows"],
+        "feature_map": dict(result.get("feature_map") or {}),
         "model_summary": model_io.summarize(bundle.meta),
         "bundle_warnings": list(getattr(bundle, "warnings", []) or []),
         "external": _external_summary(external),
+    }
+    (job_dir / "results.json").write_text(json.dumps(payload, indent=2, default=str),
+                                          encoding="utf-8")
+
+    with zipfile.ZipFile(job_dir / "results.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("report.html", html_report)
+        zf.writestr("predictions.csv", result["predictions_csv"])
+        zf.writestr("results.json", json.dumps(payload, indent=2, default=str))
+        zf.writestr("model.json", json.dumps(bundle.meta, indent=2, default=str))
+        for name, data in images.items():
+            zf.writestr(f"plots/{name}.png", data)
+
+    return {
+        **payload,
         "_report_path": str(job_dir / "report.html"),
         "_zip_path": str(job_dir / "results.zip"),
         "_predictions_path": str(job_dir / "predictions.csv"),

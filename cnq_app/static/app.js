@@ -34,6 +34,8 @@ const state = {
   predictModels: [],     // saved-model list from /api/models
   predictCsvPath: null,
   predictColumns: [],
+  predictMap: {},          // model feature -> file column (kept across model/file changes)
+  predictSuggestions: {},  // model feature -> suggested column (from validate)
   predictLastValidation: null,
   predictJobId: null,
   vpTimer: null,         // predict-validation debounce
@@ -854,7 +856,8 @@ function initPredict() {
   $("p-model-file").addEventListener("change", onPredictModelUpload);
   $("p-file-input").addEventListener("change", onPredictDataUpload);
   ["p-id-col", "p-time-col", "p-event-col"].forEach((id) =>
-    $(id).addEventListener("change", schedulePredictValidate));
+    $(id).addEventListener("change", onPredictColChange));
+  $("p-match-position").addEventListener("click", onMatchByPosition);
   $("p-run-btn").addEventListener("click", onPredictRun);
   $("p-cancel-btn").addEventListener("click", onPredictCancel);
   $("p-demo-rebuild-btn").addEventListener("click", onDemoBuild);
@@ -987,11 +990,23 @@ function renderModelSummary(m) {
   const badge = m.is_demo ? `<span class="badge badge-demo">demo · simulated data</span>` : "";
   box.innerHTML = badge + "<table>" + rows.map(([l, v]) =>
     `<tr><td class="lbl">${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("") + "</table>";
+  // Template button in the summary card (endpoint for saved/demo models, client-side for uploads).
+  const act = document.createElement("p");
+  act.className = "map-actions";
+  const a = document.createElement("a");
+  a.className = "btn btn-outline";
+  a.textContent = "Download template for this model";
+  const nm = state.predictModel && state.predictModel.name;
+  if (nm) { a.href = "/api/models/" + encodeURIComponent(nm) + "/template.csv"; a.setAttribute("download", ""); }
+  else { a.href = "#"; a.addEventListener("click", (e) => { e.preventDefault(); downloadClientTemplate(); }); }
+  act.appendChild(a);
+  box.appendChild(act);
   box.classList.remove("hidden");
 }
 
 // A model is chosen: reveal the data step, and re-validate if data is already loaded.
 function onModelChosen() {
+  state.predictSuggestions = {};   // suggestions are model-specific
   $("p-step-data").classList.remove("hidden");
   if (state.predictCsvPath) { buildPredictMapping(); schedulePredictValidate(); }
 }
@@ -1014,12 +1029,13 @@ async function loadDemoSubjects(key) {
     status.textContent = `${info.description} (${info.n_rows.toLocaleString()} rows).`;
     fillTable($("p-preview-table"), info.preview.columns, info.preview.rows);
     $("p-preview-wrap").classList.remove("hidden");
-    buildPredictMapping();
+    fillMappingColumns();
     if (info.has_outcomes) {
       if (info.time_col) $("p-time-col").value = info.time_col;
       if (info.event_col) $("p-event-col").value = info.event_col;
       $("p-external-block").open = true;   // reveal external-validation mapping
     }
+    buildPredictMapping();
     $("p-step-map").classList.remove("hidden");
     $("p-step-run").classList.remove("hidden");
     schedulePredictValidate();
@@ -1090,6 +1106,7 @@ async function onPredictDataUpload(ev) {
     dz.classList.add("has-file");
     fillTable($("p-preview-table"), info.preview.columns, info.preview.rows);
     $("p-preview-wrap").classList.remove("hidden");
+    fillMappingColumns();
     buildPredictMapping();
     $("p-step-map").classList.remove("hidden");
     $("p-step-run").classList.remove("hidden");
@@ -1100,30 +1117,28 @@ async function onPredictDataUpload(ev) {
   }
 }
 
-function buildPredictMapping() {
-  const features = (state.predictSummary && state.predictSummary.features) || [];
-  const cols = state.predictColumns || [];
-  const lower = {};
-  cols.forEach((c) => { lower[c.toLowerCase()] = c; });
+function jsNorm(s) { return String(s).toLowerCase().replace(/[\s_-]+/g, ""); }
 
-  const wrap = $("p-feature-map");
-  wrap.innerHTML = "";
-  const grid = document.createElement("div");
-  grid.className = "grid-custom";
+// Mirror of predict.auto_feature_map: exact names first, then normalised
+// (case- and separator-insensitive); one column never assigned to two features.
+function jsAutoMatch(features, cols, used) {
+  used = used || new Set();
+  const out = {};
+  features.forEach((f) => { if (cols.includes(f) && !used.has(f)) { out[f] = f; used.add(f); } });
+  const n2c = {};
+  cols.forEach((c) => { const n = jsNorm(c); if (!(n in n2c)) n2c[n] = c; });
   features.forEach((f) => {
-    const label = document.createElement("label");
-    label.textContent = f;
-    const sel = document.createElement("select");
-    sel.dataset.feature = f;
-    sel.appendChild(new Option("— none —", ""));
-    cols.forEach((c) => sel.appendChild(new Option(c, c)));
-    sel.value = cols.includes(f) ? f : (lower[f.toLowerCase()] || "");
-    sel.addEventListener("change", schedulePredictValidate);
-    label.appendChild(sel);
-    grid.appendChild(label);
+    if (out[f]) return;
+    const c = n2c[jsNorm(f)];
+    if (c !== undefined && !used.has(c)) { out[f] = c; used.add(c); }
   });
-  wrap.appendChild(grid);
+  return out;
+}
 
+// Fill the ID / time / event selects once when the file's columns change.
+function fillMappingColumns() {
+  state.predictSuggestions = {};   // a new file invalidates old suggestions
+  const cols = state.predictColumns || [];
   fillColSelect($("p-id-col"), cols, true);
   fillColSelect($("p-time-col"), cols, true);
   fillColSelect($("p-event-col"), cols, true);
@@ -1132,17 +1147,165 @@ function buildPredictMapping() {
   autoSelectByName($("p-event-col"), cols, /event|status|death|died|dead|censor|relaps|recur/i);
 }
 
-function currentFeatureMap() {
+// Build the feature-mapping table, driven by the model's features. Keeps valid
+// manual choices from state.predictMap, then auto-matches the rest by name.
+function buildPredictMapping() {
+  const summary = state.predictSummary || {};
+  const features = summary.features || [];
+  const ranges = summary.feature_ranges || {};
+  const cols = state.predictColumns || [];
+
   const map = {};
-  $("p-feature-map").querySelectorAll("select[data-feature]").forEach((sel) => {
-    if (sel.value) map[sel.dataset.feature] = sel.value;
+  const used = new Set();
+  features.forEach((f) => {
+    const c = state.predictMap[f];
+    if (c && cols.includes(c) && !used.has(c)) { map[f] = c; used.add(c); }
   });
-  return map;
+  const remaining = features.filter((f) => !map[f]);
+  const auto = jsAutoMatch(remaining, cols.filter((c) => !used.has(c)), new Set());
+  Object.entries(auto).forEach(([f, c]) => { if (!used.has(c)) { map[f] = c; used.add(c); } });
+  state.predictMap = map;
+
+  renderMapTable(features, ranges, cols);
+  updateMapStatus();
+  updateTemplateAndPosition();
+}
+
+function renderMapTable(features, ranges, cols) {
+  const tbl = $("p-feature-map");
+  tbl.innerHTML = "";
+  const head = document.createElement("tr");
+  ["Model feature", "Training range", "File column", ""].forEach((h) => {
+    const th = document.createElement("th"); th.textContent = h; head.appendChild(th);
+  });
+  tbl.appendChild(head);
+  features.forEach((f) => {
+    const tr = document.createElement("tr");
+    tr.dataset.feature = f;
+    const tdF = document.createElement("td"); tdF.className = "map-feature"; tdF.textContent = f;
+    const r = ranges[f];
+    const tdR = document.createElement("td"); tdR.className = "map-range";
+    tdR.textContent = r ? `${fmtG(r.min)} – ${fmtG(r.max)}` : "—";
+    const tdSel = document.createElement("td");
+    const sel = document.createElement("select"); sel.dataset.feature = f;
+    sel.appendChild(new Option("not mapped", ""));
+    cols.forEach((c) => {
+      const suggested = state.predictSuggestions[f] === c;
+      sel.appendChild(new Option(c + (suggested ? " (suggested)" : ""), c));
+    });
+    sel.value = state.predictMap[f] || "";
+    sel.addEventListener("change", () => onMapSelectChange(f, sel.value));
+    tdSel.appendChild(sel);
+    const tdS = document.createElement("td"); tdS.className = "map-state";
+    tr.appendChild(tdF); tr.appendChild(tdR); tr.appendChild(tdSel); tr.appendChild(tdS);
+    tbl.appendChild(tr);
+  });
+  markMapStatuses();
+}
+
+function onMapSelectChange(f, val) {
+  if (val) {
+    // one file column maps to one feature: release it from any other feature
+    Object.keys(state.predictMap).forEach((g) => {
+      if (g !== f && state.predictMap[g] === val) delete state.predictMap[g];
+    });
+    state.predictMap[f] = val;
+  } else {
+    delete state.predictMap[f];
+  }
+  renderMapTable((state.predictSummary || {}).features || [],
+    (state.predictSummary || {}).feature_ranges || {}, state.predictColumns || []);
+  updateMapStatus();
+  schedulePredictValidate();
+}
+
+function markMapStatuses() {
+  $("p-feature-map").querySelectorAll("tr[data-feature]").forEach((tr) => {
+    const mapped = !!state.predictMap[tr.dataset.feature];
+    tr.classList.toggle("matched", mapped);
+    tr.classList.toggle("unmatched", !mapped);
+    const st = tr.querySelector(".map-state");
+    if (st) st.textContent = mapped ? "✓" : "!";
+  });
+}
+
+function updateMapStatus() {
+  const features = (state.predictSummary || {}).features || [];
+  const n = features.filter((f) => state.predictMap[f]).length;
+  $("p-map-status").textContent = features.length
+    ? `${n} of ${features.length} features matched`
+    : "— match each model feature to a column —";
+}
+
+function candidateColumns() {
+  const cols = state.predictColumns || [];
+  const excluded = new Set([$("p-id-col").value, $("p-time-col").value,
+    $("p-event-col").value].filter(Boolean));
+  return cols.filter((c) => !excluded.has(c));
+}
+
+function updateTemplateAndPosition() {
+  const features = (state.predictSummary || {}).features || [];
+  const link = $("p-template-link");
+  link.classList.toggle("hidden", !state.predictSummary);
+  const name = state.predictModel && state.predictModel.name;
+  if (name) {
+    link.href = "/api/models/" + encodeURIComponent(name) + "/template.csv";
+    link.onclick = null;
+  } else {
+    link.href = "#";
+    link.onclick = (e) => { e.preventDefault(); downloadClientTemplate(); };
+  }
+  // Position matching needs at least as many candidate columns as features.
+  $("p-match-position").disabled = !(features.length && candidateColumns().length >= features.length);
+}
+
+function onMatchByPosition() {
+  const features = (state.predictSummary || {}).features || [];
+  const cand = candidateColumns();
+  if (!features.length || cand.length < features.length) return;
+  const pairs = features.map((f, i) => `  ${f}  →  ${cand[i]}`).join("\n");
+  const ok = confirm(
+    "Match by position pairs the model's features with the file's columns in order:\n\n" +
+    pairs + "\n\nIf the column order is wrong, predictions will be wrong with no error. Continue?");
+  if (!ok) return;
+  const map = {};
+  features.forEach((f, i) => { map[f] = cand[i]; });
+  state.predictMap = map;
+  renderMapTable(features, (state.predictSummary || {}).feature_ranges || {}, state.predictColumns || []);
+  updateMapStatus();
+  schedulePredictValidate();
+}
+
+function downloadClientTemplate() {
+  const features = (state.predictSummary || {}).features || [];
+  const ranges = (state.predictSummary || {}).feature_ranges || {};
+  const header = ["subject_id", ...features].join(",");
+  const row = ["", ...features.map((f) => {
+    const r = ranges[f];
+    return r && r.median != null ? r.median : "";
+  })].join(",");
+  const blob = new Blob([header + "\n" + row + "\n"], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "model_template.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function currentFeatureMap() {
+  return { ...state.predictMap };
 }
 
 function schedulePredictValidate() {
   clearTimeout(state.vpTimer);
   state.vpTimer = setTimeout(runPredictValidation, 250);
+}
+
+// ID / time / event choice changes affect the position-match candidates too.
+function onPredictColChange() {
+  updateTemplateAndPosition();
+  schedulePredictValidate();
 }
 
 async function runPredictValidation() {
@@ -1161,6 +1324,11 @@ async function runPredictValidation() {
       body: JSON.stringify(body),
     });
     state.predictLastValidation = res;
+    const sug = res.suggestions || {};
+    if (JSON.stringify(sug) !== JSON.stringify(state.predictSuggestions)) {
+      state.predictSuggestions = sug;          // re-render the table to mark "(suggested)"
+      buildPredictMapping();
+    }
     renderPredictValidation(res);
   } catch (e) {
     $("p-run-error").textContent = "Could not validate: " + e.message;
@@ -1272,6 +1440,12 @@ async function showPredictResults() {
     summary += ` · external validation not available`;
   }
   $("p-result-summary").textContent = summary;
+
+  const fm = r.feature_map || {};
+  const entries = Object.entries(fm);
+  $("p-result-mapping").textContent = entries.length
+    ? "Mapping used — " + entries.map(([f, c]) => `${f} → ${c}`).join(", ")
+    : "";
 
   fillTable($("p-pred-table"), r.columns, r.preview_rows);
   $("p-dl-predictions").href = "/api/predictions?id=" + state.predictJobId;

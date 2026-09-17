@@ -275,6 +275,30 @@ each training run persists per-split artifacts under its job dir
 rows via `pipeline.prepare_all` (a single train/valid split; 15% held out for
 early stopping) in `save_model.refit_final`.
 
+### Column mapping (Predict tab)
+
+Mapping is driven by the **model's** features, not the file's columns. The client
+renders one row per model feature (name, training range, a dropdown of the file's
+columns + "not mapped", and a status), rebuilt whenever the model or the file
+changes while keeping still-valid manual choices. `predict.auto_feature_map` (and
+its JS mirror `jsAutoMatch`) match **by name only**: exact first, then normalised
+(`_norm` = lowercase with spaces/hyphens/underscores removed), and never assign
+one file column to two features. `_resolve_map` combines the caller's explicit
+`{feature: column}` with auto-matching for anything left unmapped.
+
+`validate` reports the matched count, an `out_of_range` warning, a
+**`duplicate_mapping`** error (two features → one column) and a
+**`missing_features`** error (a feature name-matching can't place), plus
+`suggestions` — for each unmapped feature, the numeric column whose values fall
+inside the training range far better than the others (shown as "suggested", never
+auto-selected). Fallbacks in the UI: **Download template for this model**
+(`GET /api/models/<name>/template.csv` — header of `subject_id` + the features in
+order, one row of training medians if available) and **Match by position** (pairs
+features to non-ID/time/event columns in order, behind a confirmation). `run` and
+`POST /api/predict/run` reject an unmapped or duplicate mapping with a **400**
+before any job starts, and the mapping used is written into `results.json`, the
+report and the results zip, and shown above the results.
+
 ### Prediction validation & outputs
 
 `predict.validate` mirrors the numeric rules in `validation.py` but is anchored
@@ -296,6 +320,7 @@ report and a results zip (predictions CSV, figures, report, and a copy of
 |----------|---------|
 | `GET /api/models` | list saved bundles (`read_meta` each; torch-free) |
 | `GET /api/models/download?name=` | download a saved `.cnqmodel` |
+| `GET /api/models/<name>/template.csv` | a CSV template with the model's exact feature columns |
 | `DELETE /api/models?name=` | delete a saved bundle |
 | `POST /api/save` | start a `save` job `{source_job_id, model, bundle_type, split_index?, name}` |
 | `POST /api/predict/upload-model` | store an uploaded `.cnqmodel`, return its summary |

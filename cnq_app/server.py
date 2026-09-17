@@ -294,6 +294,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_list_models()
             if route == "/api/models/download":
                 return self._handle_model_download(query)
+            if route.startswith("/api/models/") and route.endswith("/template.csv"):
+                from urllib.parse import unquote
+                name = unquote(route[len("/api/models/"):-len("/template.csv")])
+                return self._handle_model_template(name)
             if route == "/api/predictions":
                 return self._handle_download(query, "predictions.csv", "text/csv",
                                              "cnq_predictions.csv")
@@ -521,6 +525,34 @@ class Handler(SimpleHTTPRequestHandler):
         path.unlink()
         self._send_json({"deleted": True, "name": path.stem})
 
+    def _handle_model_template(self, name):
+        """A CSV template for a model: header of subject_id + the model's features
+        in order, and one example row from training medians (blank if unknown)."""
+        import demo
+        import model_io
+        if name == DEMO_MODEL_NAME:
+            path = demo.resolve_model()
+        else:
+            path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
+        if not path or not path.exists():
+            return self._error("model not found", 404)
+        try:
+            meta = model_io.read_meta(path)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(f"could not read the model: {exc}")
+        features = list(meta.get("feature_names") or [])
+        ranges = meta.get("feature_ranges") or {}
+
+        def median_cell(f):
+            v = (ranges.get(f) or {}).get("median")
+            return "" if v is None else format(float(v), "g")
+
+        header = ["subject_id", *features]
+        row = ["", *[median_cell(f) for f in features]]
+        csv = ",".join(header) + "\n" + ",".join(row) + "\n"
+        stem = "demo" if name == DEMO_MODEL_NAME else model_io.safe_name(name)
+        self._send_bytes(csv.encode("utf-8"), "text/csv", filename=f"{stem}_template.csv")
+
     # ---- demo new-subject data + model build ----
     def _handle_demo_data(self, query):
         import demo
@@ -696,13 +728,25 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_predict_run(self):
         if not self._repo_ready():
             return
+        import model_io
+        import pandas as pd
+        import predict as predict_mod
         cfg = json.loads(self._read_body() or b"{}")
         if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
             return self._error("upload a CSV first")
         try:
-            self._bundle_path_from_ref(cfg.get("model_ref"))
+            meta = model_io.read_meta(self._bundle_path_from_ref(cfg.get("model_ref")))
         except Exception as exc:  # noqa: BLE001
             return self._error(f"invalid model: {exc}")
+        # Reject an unmapped or duplicate mapping with a 400 before starting a job.
+        vres = predict_mod.validate(
+            meta, pd.read_csv(cfg["csv_path"]), cfg.get("feature_map"),
+            id_col=cfg.get("id_col"), time_col=cfg.get("time_col"),
+            event_col=cfg.get("event_col"), event_positive=cfg.get("event_positive"))
+        blocking = [e for e in vres["errors"]
+                    if e["code"] in ("missing_features", "duplicate_mapping", "feature_not_numeric")]
+        if blocking:
+            return self._error(blocking[0]["message"])
         manager = _get_manager()
         if manager.active() is not None:
             return self._error("a job is already running", 409)

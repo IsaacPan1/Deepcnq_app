@@ -18,6 +18,8 @@ training set.
 """
 from __future__ import annotations
 
+import re
+from collections import Counter
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -32,26 +34,86 @@ from deepquantreg.training import predict_quantiles  # package binding: NOT the 
 # --------------------------------------------------------------------------- #
 # column matching
 # --------------------------------------------------------------------------- #
+def _norm(s: str) -> str:
+    """Normalise a name: lowercase and drop spaces, hyphens and underscores."""
+    return re.sub(r"[\s_-]+", "", str(s).lower())
+
+
 def auto_feature_map(feature_names: list[str], columns: list[str]) -> dict[str, str]:
-    """Best-effort map bundle feature -> CSV column, by exact then case-insensitive name."""
-    lower = {c.lower(): c for c in columns}
+    """Map model feature -> file column **by name only**.
+
+    Exact matches are taken first (across all features), then normalised matches
+    (case- and separator-insensitive). A file column is never assigned to two
+    features, and nothing is guessed beyond name matching.
+    """
+    cols = list(columns)
     out: dict[str, str] = {}
-    for f in feature_names:
-        if f in columns:
+    used: set[str] = set()
+    for f in feature_names:                        # pass 1: exact
+        if f in cols and f not in used:
             out[f] = f
-        elif f.lower() in lower:
-            out[f] = lower[f.lower()]
+            used.add(f)
+    norm_to_col: dict[str, str] = {}
+    for c in cols:
+        norm_to_col.setdefault(_norm(c), c)
+    for f in feature_names:                        # pass 2: normalised
+        if f in out:
+            continue
+        c = norm_to_col.get(_norm(f))
+        if c is not None and c not in used:
+            out[f] = c
+            used.add(c)
     return out
 
 
 def _resolve_map(meta: dict, columns: list[str], feature_map: dict | None) -> dict[str, str]:
+    """The caller's explicit choices, with name-based auto-matching filling any
+    feature left unmapped. One file column is never given to two features (except
+    when the caller explicitly does so — that's reported as an error by validate)."""
     features = list(meta.get("feature_names") or [])
-    fmap = dict(feature_map or {})
-    auto = auto_feature_map(features, columns)
-    for f in features:
-        fmap.setdefault(f, auto.get(f))
-    # Only keep entries pointing at a real column.
-    return {f: c for f, c in fmap.items() if c in columns}
+    cols = list(columns)
+    explicit = {f: c for f, c in (feature_map or {}).items() if f in features and c in cols}
+    out = dict(explicit)
+    used = set(out.values())
+    remaining = [f for f in features if f not in out]
+    for f, c in auto_feature_map(remaining, [c for c in cols if c not in used]).items():
+        out[f] = c
+        used.add(c)
+    return out
+
+
+def _duplicate_columns(fmap: dict[str, str]) -> list[str]:
+    return [c for c, n in Counter(fmap.values()).items() if n > 1]
+
+
+def suggest_columns(meta: dict, raw: pd.DataFrame, unmapped: list[str],
+                    used_cols: set[str]) -> dict[str, str]:
+    """For each unmapped feature, suggest the file column whose values fall inside
+    the feature's training range far better than any other (name matching only is
+    never enough here). Returns {feature: column}; nothing is auto-selected."""
+    ranges = meta.get("feature_ranges") or {}
+    numeric_cols = [c for c in raw.columns
+                    if c not in used_cols and pd.api.types.is_numeric_dtype(
+                        pd.to_numeric(raw[c], errors="coerce"))]
+    out: dict[str, str] = {}
+    for f in unmapped:
+        r = ranges.get(f)
+        if not r:
+            continue
+        lo, hi = float(r["min"]), float(r["max"])
+        best, best_frac, second = None, 0.0, 0.0
+        for c in numeric_cols:
+            vals = pd.to_numeric(raw[c], errors="coerce").dropna().to_numpy()
+            if len(vals) == 0:
+                continue
+            frac = float(np.mean((vals >= lo) & (vals <= hi)))
+            if frac > best_frac:
+                best, best_frac, second = c, frac, best_frac
+            elif frac > second:
+                second = frac
+        if best is not None and best_frac >= 0.8 and best_frac >= second + 0.15:
+            out[f] = best
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -71,6 +133,17 @@ def validate(meta: dict, raw: pd.DataFrame, feature_map: dict | None = None,
     features = list(meta.get("feature_names") or [])
     columns = list(raw.columns)
     fmap = _resolve_map(meta, columns, feature_map)
+
+    # two features mapped to the same column is an error (blocks the run)
+    dup_cols = _duplicate_columns(fmap)
+    if dup_cols:
+        by_col: dict[str, list[str]] = {}
+        for f, c in fmap.items():
+            by_col.setdefault(c, []).append(f)
+        detail = "; ".join(f"'{c}' → {', '.join(fs)}" for c, fs in by_col.items() if len(fs) > 1)
+        errors.append(_msg("duplicate_mapping",
+                           f"Each file column maps to only one feature. Fix: {detail}.",
+                           columns=dup_cols))
 
     missing = [f for f in features if f not in fmap]
     if missing:
@@ -124,14 +197,17 @@ def validate(meta: dict, raw: pd.DataFrame, feature_map: dict | None = None,
                                  "predictions there are extrapolations.",
                                  count=total_oor, per_feature=oor["per_feature"]))
 
+    suggestions = suggest_columns(meta, raw, missing, set(fmap.values())) if missing else {}
     summary = {
         "rows_before": int(len(raw)),
         "rows_used": rows_used,
         "rows_excluded": n_excluded,
         "n_features": len(features),
+        "n_matched": len(fmap),
         "has_external": bool(time_col and event_col),
     }
-    return {"errors": errors, "warnings": warnings, "summary": summary, "feature_map": fmap}
+    return {"errors": errors, "warnings": warnings, "summary": summary,
+            "feature_map": fmap, "suggestions": suggestions}
 
 
 def _out_of_range_counts(meta: dict, feat_df: pd.DataFrame, features: list[str]) -> dict:
@@ -213,6 +289,9 @@ def run_prediction(bundle, raw: pd.DataFrame, feature_map: dict, *,
     missing = [f for f in features if f not in fmap]
     if missing:
         raise ValueError(f"missing required feature column(s): {', '.join(missing)}")
+    dup_cols = _duplicate_columns(fmap)
+    if dup_cols:
+        raise ValueError(f"two features map to the same column: {', '.join(dup_cols)}")
 
     tick("Preparing data", 0.1)
     # numeric feature matrix, original index preserved

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="/style.css?v=7">
+  <link rel="stylesheet" href="/style.css?v=8">
 </head>
 <body>
 <header class="masthead">
@@ -314,8 +314,6 @@ S002,36.0,0,64,1.2,0</pre>
   <!-- P3: map columns -->
   <section class="card step hidden" id="p-step-map">
     <h2><span class="num">3</span> Map columns</h2>
-    <p class="field-label">Feature columns <span class="muted">auto-matched by name; every model feature is required</span></p>
-    <div id="p-feature-map"></div>
     <div class="row">
       <label>Subject ID column <span class="muted">optional; labels predictions</span>
         <select id="p-id-col"></select>
@@ -336,6 +334,17 @@ S002,36.0,0,64,1.2,0</pre>
         </div>
       </div>
     </details>
+
+    <p class="field-label">Feature columns
+      <span class="muted" id="p-map-status">— match each model feature to a column —</span></p>
+    <div class="map-actions">
+      <a id="p-template-link" class="btn btn-outline hidden" download>Download template for this model</a>
+      <button type="button" id="p-match-position" class="btn btn-outline" disabled>Match by position</button>
+    </div>
+    <div class="table-scroll map-scroll">
+      <table id="p-feature-map" class="map-table"></table>
+    </div>
+
     <div id="p-validation-panel" class="validation hidden" aria-live="polite">
       <div id="p-v-errors" class="v-group v-errors"></div>
       <div id="p-v-warnings" class="v-group v-warnings"></div>
@@ -365,6 +374,7 @@ S002,36.0,0,64,1.2,0</pre>
   <section class="card step hidden" id="p-step-results">
     <h2><span class="num">5</span> Predictions</h2>
     <p id="p-result-summary" class="v-summary"></p>
+    <p id="p-result-mapping" class="muted"></p>
     <div class="downloads">
       <a id="p-dl-predictions" class="btn">Download predictions (.csv)</a>
       <a id="p-dl-report" class="btn btn-outline" target="_blank">Open report in new tab</a>
@@ -378,6 +388,6 @@ S002,36.0,0,64,1.2,0</pre>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js?v=7"></script>
+<script src="/app.js?v=8"></script>
 </body>
 </html>

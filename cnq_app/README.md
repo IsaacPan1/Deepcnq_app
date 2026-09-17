@@ -151,10 +151,20 @@ Switch to the **Predict** tab:
 1. **Choose a model** — pick one of your saved models (its summary is shown), or
    upload a `.cnqmodel` file.
 2. **Upload new subjects** — a CSV containing the model's feature columns.
-3. **Map columns** — feature columns are auto-matched by name; every training
-   feature is required. Optionally choose a subject **ID** column, and — only if
-   your new subjects have *known* outcomes — a **time** and **event** column for
-   external validation.
+3. **Map columns** — a table lists every model feature (with its training range)
+   next to a dropdown of your file's columns. Columns are auto-matched by name
+   (exact first, then ignoring case, spaces, hyphens and underscores); it shows
+   e.g. *"11 of 11 features matched"* and highlights any unmatched row. If the
+   names don't line up you can:
+   - **Download template for this model** — a CSV with exactly the columns the
+     model expects (rename your data to match), then re-upload it;
+   - **Match by position** — pair features to columns in order (it asks you to
+     confirm the pairs first, since a wrong order gives wrong predictions);
+   - pick columns yourself from each dropdown (a likely column may be marked
+     *"suggested"*).
+
+   Optionally choose a subject **ID** column, and — only if your new subjects have
+   *known* outcomes — a **time** and **event** column for external validation.
 4. **Run** the prediction. You get a results table and downloads for the
    **predictions CSV**, an **HTML report** (plots), and a **zip** of everything.
 

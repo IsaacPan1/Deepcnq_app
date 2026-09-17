@@ -507,6 +507,19 @@ iframe#report-frame, iframe#p-report-frame {
 #p-feature-map .grid-custom { margin-top: .3rem; }
 #p-feature-map label { margin: .5rem 0 .25rem; }
 
+/* ---------- Predict column-mapping table ---------- */
+.map-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .3rem 0 .5rem; }
+.map-actions .btn { font-size: .86rem; padding: .45rem .9rem; }
+.map-scroll { max-height: 340px; }
+table.map-table td, table.map-table th { white-space: nowrap; vertical-align: middle; }
+table.map-table td.map-feature { font-weight: 600; }
+table.map-table td.map-range { color: var(--muted); font-variant-numeric: tabular-nums; }
+table.map-table select { margin: 0; min-width: 12rem; }
+table.map-table td.map-state { text-align: center; font-weight: 700; }
+table.map-table tr.matched td.map-state { color: var(--ok); }
+table.map-table tr.unmatched { background: #fdf6e3; }
+table.map-table tr.unmatched td.map-state { color: var(--q90); font-weight: 600; }
+
 .demo-choices { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .3rem; }
 .demo-choices button { font-size: .86rem; padding: .45rem .9rem; }
 .badge {

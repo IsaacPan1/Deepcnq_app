@@ -10,9 +10,11 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -259,18 +261,71 @@ def test_predict_with_uploaded_model(trained_server):
     assert _poll(base, json.loads(body)["job_id"])["state"] == "done"
 
 
-def test_predict_missing_feature_is_flagged(trained_server):
-    # Drop a required feature from the mapping -> validation error, no job.
+def _upload_csv(base, frame, name="new.csv"):
+    st, body = _http(f"{base}/api/predict/upload-data", data=frame.to_csv(index=False).encode(),
+                     headers={"Content-Type": "text/csv", "X-Filename": name})
+    assert st == 200, body
+    return json.loads(body)["csv_path"]
+
+
+def test_validate_flags_unmapped_feature(trained_server):
+    # A file where one feature has no matching column -> missing_features.
     base, run_id, _ = trained_server
     name = _ensure_saved(base, run_id)
-    st, body = _http(f"{base}/api/predict/upload-data", data=paths.SAMPLE_DATA.read_bytes(),
-                     headers={"Content-Type": "text/csv", "X-Filename": "new.csv"})
-    csv_path = json.loads(body)["csv_path"]
-    payload = {
-        "model_ref": {"name": name}, "csv_path": csv_path,
-        "feature_map": {f: f for f in FEATURES[1:]},  # missing feat_0
-        "id_col": None, "time_col": None, "event_col": None,
-    }
+    frame = pd.read_csv(paths.SAMPLE_DATA).rename(columns={"feat_0": "unmatched_col"})
+    csv_path = _upload_csv(base, frame)
+    payload = {"model_ref": {"name": name}, "csv_path": csv_path, "feature_map": {},
+               "id_col": None, "time_col": None, "event_col": None}
     st, body = _post(base, "/api/predict/validate", payload)
     assert st == 200
-    assert any(e["code"] == "missing_features" for e in json.loads(body)["errors"])
+    v = json.loads(body)
+    assert any(e["code"] == "missing_features" for e in v["errors"])
+    assert v["summary"]["n_matched"] == len(FEATURES) - 1
+
+
+def test_run_rejects_unmapped_with_400(trained_server):
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id)
+    frame = pd.read_csv(paths.SAMPLE_DATA).rename(columns={"feat_0": "unmatched_col"})
+    csv_path = _upload_csv(base, frame)
+    payload = {"model_ref": {"name": name}, "csv_path": csv_path, "feature_map": {},
+               "id_col": None, "time_col": None, "event_col": None}
+    st, body = _post(base, "/api/predict/run", payload)
+    assert st == 400 and b"aren't mapped" in body
+
+
+def test_run_rejects_duplicate_with_400(trained_server):
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id)
+    csv_path = _upload_csv(base, pd.read_csv(paths.SAMPLE_DATA))
+    payload = {"model_ref": {"name": name}, "csv_path": csv_path,
+               "feature_map": {"feat_0": "feat_0", "feat_1": "feat_0"},  # two -> one column
+               "id_col": None, "time_col": None, "event_col": None}
+    st, body = _post(base, "/api/predict/run", payload)
+    assert st == 400 and b"only one feature" in body
+
+
+def test_template_download_and_roundtrip(trained_server):
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id, "api-template")
+    st, body = _http(f"{base}/api/models/{urllib.parse.quote(name)}/template.csv")
+    assert st == 200, body
+    header = body.decode().splitlines()[0].split(",")
+    assert header == ["subject_id"] + FEATURES        # exact columns, in order
+
+    # fill the template with numeric rows, upload, and validate -> auto-maps fully
+    lines = [",".join(header)] + [",".join([f"S{i}"] + ["0.1"] * len(FEATURES)) for i in range(3)]
+    st, body = _http(f"{base}/api/predict/upload-data", data=("\n".join(lines) + "\n").encode(),
+                     headers={"Content-Type": "text/csv", "X-Filename": "filled_template.csv"})
+    csv_path = json.loads(body)["csv_path"]
+    payload = {"model_ref": {"name": name}, "csv_path": csv_path, "feature_map": {},
+               "id_col": "subject_id", "time_col": None, "event_col": None}
+    st, body = _post(base, "/api/predict/validate", payload)
+    v = json.loads(body)
+    assert v["errors"] == [] and v["summary"]["n_matched"] == len(FEATURES)
+
+
+def test_run_payload_includes_feature_map():
+    # Guard against a UI-vs-API mismatch: app.js must send the mapping.
+    src = (APP_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    assert "feature_map: currentFeatureMap()" in src
