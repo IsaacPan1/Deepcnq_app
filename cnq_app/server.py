@@ -34,9 +34,6 @@ UPLOAD_DIR = paths.OUTPUT_DIR / "uploads"
 MODELS_DIR = paths.MODELS_DIR
 MAX_UPLOAD = 64 * 1024 * 1024  # 64 MB raw-body cap
 
-# The demo model is listed under this reserved name; it can't be deleted, and it
-# is generated/built on demand (see demo.py) rather than requiring a terminal.
-DEMO_MODEL_NAME = "Demo model (simulated data)"
 # Predict-tab "Use demo new subjects" choices: key -> (description, has_outcomes)
 DEMO_SUBJECT_INFO = {
     "new": ("20 new patients, no outcomes — includes 2 out-of-range rows and a note column", False),
@@ -469,14 +466,29 @@ class Handler(SimpleHTTPRequestHandler):
         self._send_bytes(target.read_bytes(), content_type,
                          filename=None if inline else download_name)
 
-    # ---- saved models ----
+    # ---- saved models (id-based) ----
+    def _resolve_model(self, model_id):
+        """Resolve a model **id** to a bundle Path, or raise a clear message.
+        The single resolver used by validate, run, template and download."""
+        import demo
+        if not model_id:
+            raise ValueError("no model selected")
+        path = demo.bundle_for_id(model_id)
+        if path is not None and path.exists():
+            return path
+        if model_id == demo.DEMO_ID:
+            raise LookupError("The demo model isn't built yet. Click Build demo model.")
+        if str(model_id).startswith("upload:"):
+            raise LookupError("That uploaded model is no longer available; upload it again.")
+        raise LookupError(f"Saved model '{model_id}' no longer exists; refresh the list.")
+
     def _handle_list_models(self):
         import demo
         import model_io
         out = []
-        # The demo model is always listed first. If it isn't built yet the entry
-        # carries needs_build so the UI can offer a one-click build.
-        entry = {"name": DEMO_MODEL_NAME, "file": demo.MODEL_FILE, "is_demo": True}
+        # The demo model is always listed first, with a stable id and a label.
+        entry = {"id": demo.DEMO_ID, "label": demo.DEMO_LABEL, "is_demo": True,
+                 "source": demo.demo_source()}
         demo_path = demo.resolve_model()
         if demo_path is None:
             entry["needs_build"] = True
@@ -488,54 +500,49 @@ class Handler(SimpleHTTPRequestHandler):
         out.append(entry)
         if MODELS_DIR.exists():
             for p in sorted(MODELS_DIR.glob("*.cnqmodel")):
+                e = {"id": p.stem, "label": p.stem, "source": "models"}
                 try:
-                    out.append({"name": p.stem, "file": p.name, **model_io.summarize(
-                        model_io.read_meta(p))})
+                    e.update(model_io.summarize(model_io.read_meta(p)))
                 except Exception as exc:  # noqa: BLE001 - list what we can, flag the rest
-                    out.append({"name": p.stem, "file": p.name, "error": str(exc)})
+                    e["error"] = str(exc)
+                out.append(e)
         self._send_json({"models": out})
 
     def _handle_model_download(self, query):
         import demo
-        import model_io
-        name = _one(query, "name")
-        if not name:
-            return self._error("model name required")
-        if name == DEMO_MODEL_NAME:
-            path = demo.resolve_model()
-            if path is None:
-                return self._error("the demo model isn't built yet", 404)
-        else:
-            path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
-        if not path.exists():
-            return self._error("model not found", 404)
-        dl = "demo_model" if name == DEMO_MODEL_NAME else path.stem
-        self._send_bytes(path.read_bytes(), "application/octet-stream", filename=f"{dl}.cnqmodel")
+        model_id = _one(query, "id")
+        try:
+            path = self._resolve_model(model_id)
+        except (ValueError, LookupError) as exc:
+            return self._error(str(exc), 404)
+        stem = "demo_model" if model_id == demo.DEMO_ID else path.stem
+        self._send_bytes(path.read_bytes(), "application/octet-stream", filename=f"{stem}.cnqmodel")
 
     def _handle_delete_model(self, query):
+        import demo
         import model_io
-        name = _one(query, "name")
-        if not name:
-            return self._error("model name required")
-        if name == DEMO_MODEL_NAME:
+        model_id = _one(query, "id")
+        if not model_id:
+            return self._error("model id required")
+        if model_id == demo.DEMO_ID:
             return self._error("the demo model can't be deleted", 403)
-        path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
+        if str(model_id).startswith("upload:"):
+            return self._error("uploaded models aren't in the saved list", 400)
+        path = MODELS_DIR / f"{model_io.safe_name(model_id)}.cnqmodel"
         if not path.exists():
             return self._error("model not found", 404)
         path.unlink()
-        self._send_json({"deleted": True, "name": path.stem})
+        self._send_json({"deleted": True, "id": path.stem})
 
-    def _handle_model_template(self, name):
+    def _handle_model_template(self, model_id):
         """A CSV template for a model: header of subject_id + the model's features
         in order, and one example row from training medians (blank if unknown)."""
         import demo
         import model_io
-        if name == DEMO_MODEL_NAME:
-            path = demo.resolve_model()
-        else:
-            path = MODELS_DIR / f"{model_io.safe_name(name)}.cnqmodel"
-        if not path or not path.exists():
-            return self._error("model not found", 404)
+        try:
+            path = self._resolve_model(model_id)
+        except (ValueError, LookupError) as exc:
+            return self._error(str(exc), 404)
         try:
             meta = model_io.read_meta(path)
         except Exception as exc:  # noqa: BLE001
@@ -550,7 +557,7 @@ class Handler(SimpleHTTPRequestHandler):
         header = ["subject_id", *features]
         row = ["", *[median_cell(f) for f in features]]
         csv = ",".join(header) + "\n" + ",".join(row) + "\n"
-        stem = "demo" if name == DEMO_MODEL_NAME else model_io.safe_name(name)
+        stem = "demo" if model_id == demo.DEMO_ID else model_io.safe_name(model_id)
         self._send_bytes(csv.encode("utf-8"), "text/csv", filename=f"{stem}_template.csv")
 
     # ---- demo new-subject data + model build ----
@@ -650,41 +657,30 @@ class Handler(SimpleHTTPRequestHandler):
         self._send_json({"job_id": job.id, **job.status()})
 
     # ---- predict ----
-    def _bundle_path_from_ref(self, ref):
-        import demo
-        import model_io
-        ref = ref or {}
-        if ref.get("path"):
-            p = Path(ref["path"])
-        elif ref.get("name") == DEMO_MODEL_NAME:
-            p = demo.resolve_model()
-            if p is None:
-                raise FileNotFoundError("the demo model isn't built yet")
-        elif ref.get("name"):
-            p = MODELS_DIR / f"{model_io.safe_name(ref['name'])}.cnqmodel"
-        else:
-            raise ValueError("no model selected")
-        if not p.exists():
-            raise FileNotFoundError("model not found")
-        return p
-
     def _handle_upload_model(self):
         if not self._repo_ready():
             return
+        import demo
         import model_io
         data = self._read_body()
         if not data:
             return self._error("empty upload")
-        dest_dir = UPLOAD_DIR / "models"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        path = dest_dir / f"{uuid.uuid4().hex[:12]}.cnqmodel"
+        demo.UPLOAD_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex[:12]
+        path = demo.UPLOAD_MODELS_DIR / f"{token}.cnqmodel"
         path.write_bytes(data)
         try:
             meta = model_io.read_meta(path)
         except Exception as exc:  # noqa: BLE001
             path.unlink(missing_ok=True)
             return self._error(f"not a valid model bundle: {exc}")
-        self._send_json({"model_path": str(path), "summary": model_io.summarize(meta)})
+        label = self.headers.get("X-Filename") or "Uploaded model"
+        if label.endswith(".cnqmodel"):
+            label = label[:-len(".cnqmodel")]
+        # Uploaded bundles get an id ("upload:<token>") like every other model;
+        # the browser never references them by file path.
+        self._send_json({"id": f"upload:{token}", "label": label,
+                         "summary": model_io.summarize(meta)})
 
     def _handle_predict_upload_data(self):
         if not self._repo_ready():
@@ -708,15 +704,16 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._repo_ready():
             return
         import model_io
-        import pandas as pd
-        import predict as predict_mod
         cfg = json.loads(self._read_body() or b"{}")
         if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
             return self._error("upload a CSV first")
         try:
-            meta = model_io.read_meta(self._bundle_path_from_ref(cfg.get("model_ref")))
-        except Exception as exc:  # noqa: BLE001
-            return self._error(f"could not read the model: {exc}")
+            path = self._resolve_model(cfg.get("model_id"))
+        except (ValueError, LookupError) as exc:
+            return self._error(str(exc))
+        meta = model_io.read_meta(path)
+        import pandas as pd
+        import predict as predict_mod
         raw = pd.read_csv(cfg["csv_path"])
         result = predict_mod.validate(
             meta, raw, cfg.get("feature_map"), id_col=cfg.get("id_col"),
@@ -729,15 +726,18 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._repo_ready():
             return
         import model_io
-        import pandas as pd
-        import predict as predict_mod
         cfg = json.loads(self._read_body() or b"{}")
         if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
             return self._error("upload a CSV first")
+        # Resolve the model first (no torch): a 400 with a clear message beats a
+        # job that fails at 0 seconds.
         try:
-            meta = model_io.read_meta(self._bundle_path_from_ref(cfg.get("model_ref")))
-        except Exception as exc:  # noqa: BLE001
-            return self._error(f"invalid model: {exc}")
+            path = self._resolve_model(cfg.get("model_id"))
+        except (ValueError, LookupError) as exc:
+            return self._error(str(exc))
+        meta = model_io.read_meta(path)
+        import pandas as pd
+        import predict as predict_mod
         # Reject an unmapped or duplicate mapping with a 400 before starting a job.
         vres = predict_mod.validate(
             meta, pd.read_csv(cfg["csv_path"]), cfg.get("feature_map"),

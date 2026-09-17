@@ -41,6 +41,11 @@ def _http(url, data=None, headers=None, method=None):
         return e.code, e.read()
 
 
+def _post(base, path, obj):
+    return _http(base + path, data=json.dumps(obj).encode(),
+                 headers={"Content-Type": "application/json"}, method="POST")
+
+
 def _boot():
     from server import Handler
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -163,12 +168,61 @@ def test_build_endpoint_starts_job_attaches_and_registers(demo_dirs, monkeypatch
 
 
 def test_demo_model_cannot_be_deleted():
-    from server import DEMO_MODEL_NAME
     httpd, base = _boot()
     try:
-        st, _ = _http(f"{base}/api/models?name={urllib.parse.quote(DEMO_MODEL_NAME)}",
-                      method="DELETE")
+        st, _ = _http(f"{base}/api/models?id={demo.DEMO_ID}", method="DELETE")
         assert st == 403
+    finally:
+        httpd.shutdown()
+
+
+# ---- id resolution (torch-free: the model resolves before predict imports) ----
+def _demo_csv(base):
+    return json.loads(_http(f"{base}/api/demo/data?name=new")[1])["csv_path"]
+
+
+def test_predict_unbuilt_demo_returns_400(demo_dirs):
+    httpd, base = _boot()
+    try:
+        payload = {"model_id": demo.DEMO_ID, "csv_path": _demo_csv(base), "feature_map": {},
+                   "id_col": "subject_id", "time_col": None, "event_col": None}
+        st, body = _post(base, "/api/predict/run", payload)
+        assert st == 400 and b"isn't built yet" in body
+    finally:
+        httpd.shutdown()
+
+
+def test_predict_with_demo_label_as_id_is_rejected(demo_dirs):
+    # Sending the display label instead of the id must be a clean 400.
+    httpd, base = _boot()
+    try:
+        payload = {"model_id": demo.DEMO_LABEL, "csv_path": _demo_csv(base), "feature_map": {},
+                   "id_col": "subject_id", "time_col": None, "event_col": None}
+        st, body = _post(base, "/api/predict/run", payload)
+        assert st == 400 and b"no longer exists" in body
+    finally:
+        httpd.shutdown()
+
+
+def test_predict_demo_by_id_committed_and_cache(demo_dirs, monkeypatch):
+    import shutil
+    monkeypatch.setattr(demo, "DEFAULT_EPOCHS", 3)
+    httpd, base = _boot()
+    try:
+        st, body = _http(f"{base}/api/demo/build", method="POST")
+        assert st == 200 and _poll(base, json.loads(body)["job_id"])["state"] == "done"
+        payload = {"model_id": demo.DEMO_ID, "csv_path": _demo_csv(base), "feature_map": {},
+                   "id_col": "subject_id", "time_col": None, "event_col": None}
+
+        st, body = _post(base, "/api/predict/run", payload)      # freshly built demo_cache bundle
+        assert st == 200 and _poll(base, json.loads(body)["job_id"])["state"] == "done"
+
+        committed = demo.COMMITTED_DIR / demo.MODEL_FILE          # now as a committed bundle
+        committed.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(demo.cached(demo.MODEL_FILE)), str(committed))
+        assert demo.demo_source() == "demo"
+        st, body = _post(base, "/api/predict/run", payload)
+        assert st == 200 and _poll(base, json.loads(body)["job_id"])["state"] == "done"
     finally:
         httpd.shutdown()
 

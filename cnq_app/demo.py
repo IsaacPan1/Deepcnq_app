@@ -36,6 +36,12 @@ COMMITTED_DIR = paths.DEMO_DIR                 # cnq_app/demo/
 CACHE_DIR = paths.HERE / "demo_cache"          # cnq_app/demo_cache/ (gitignored)
 
 MODEL_FILE = "demo_model.cnqmodel"
+
+# Stable id + display label for the demo model (ids are never display labels).
+DEMO_ID = "demo"
+DEMO_LABEL = "Demo model (simulated data)"
+# Uploaded .cnqmodel bundles are stored here and referenced by the id "upload:<token>".
+UPLOAD_MODELS_DIR = paths.OUTPUT_DIR / "uploads" / "models"
 CSV_FILES = {
     "train": "demo_train.csv",
     "new": "demo_new_subjects.csv",
@@ -216,6 +222,35 @@ def resolve_model() -> "Path | None":
     if committed(MODEL_FILE).exists():
         return committed(MODEL_FILE)
     return None
+
+
+def demo_source() -> "str | None":
+    """Where the demo bundle lives: 'demo' (committed), 'demo_cache' (built) or None."""
+    if cached(MODEL_FILE).exists():
+        return "demo_cache"
+    if committed(MODEL_FILE).exists():
+        return "demo"
+    return None
+
+
+def bundle_for_id(model_id: str) -> "Path | None":
+    """Resolve a model **id** to a bundle Path (or None). The single source of
+    truth used by every predict/template/download path.
+
+    Ids: ``'demo'`` (committed demo/ then demo_cache/), ``'upload:<token>'`` (an
+    uploaded bundle), or a saved-model file stem (``models/<stem>.cnqmodel``).
+    """
+    import model_io
+    if not model_id:
+        return None
+    if model_id == DEMO_ID:
+        return resolve_model()
+    if model_id.startswith("upload:"):
+        token = model_io.safe_name(model_id.split(":", 1)[1])
+        p = UPLOAD_MODELS_DIR / f"{token}.cnqmodel"
+        return p if p.exists() else None
+    p = paths.MODELS_DIR / f"{model_io.safe_name(model_id)}.cnqmodel"
+    return p if p.exists() else None
 
 
 # --------------------------------------------------------------------------- #

@@ -29,8 +29,8 @@ const state = {
   runSplits: 1,          // repeated splits the finished run used
   saveJobId: null,
   // predict tab
-  predictModel: null,    // {name} for a saved bundle or {path} for an uploaded one
-  predictSummary: null,  // model summary (features, quantiles, training size, ...)
+  predictModelId: null,  // stable model id (demo | upload:<t> | saved stem)
+  predictSummary: null,  // the model's list entry / summary (features, source, ...)
   predictModels: [],     // saved-model list from /api/models
   predictCsvPath: null,
   predictColumns: [],
@@ -43,8 +43,8 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
-// The shipped demo model is listed under this reserved name (see server.py).
-const DEMO_MODEL_NAME = "Demo model (simulated data)";
+// The demo model's stable id (ids are never display labels; see server.py / demo.py).
+const DEMO_MODEL_ID = "demo";
 
 // Display names for the package's model identifiers (values sent to the server are unchanged).
 const MODEL_INFO = {
@@ -835,7 +835,7 @@ async function onSave() {
         $("save-result").classList.remove("hidden");
         $("save-result").innerHTML =
           `Saved <b>${escapeHtml(dlName)}</b>. ` +
-          `<a href="/api/models/download?name=${encodeURIComponent(dlName)}" download>` +
+          `<a href="/api/models/download?id=${encodeURIComponent(dlName)}" download>` +
           `Download ${escapeHtml(dlName)}.cnqmodel</a> — it now appears in the Predict tab.`;
       },
       onError: (e) => { $("save-btn").disabled = false; $("save-error").textContent = "Save failed: " + e; },
@@ -876,38 +876,39 @@ async function loadSavedModels() {
   const previous = sel.value;
   sel.innerHTML = "";
   const usable = state.predictModels.filter((m) => !m.error);
-  sel.appendChild(new Option(usable.length ? "— choose a saved model —" : "— no saved models yet —", ""));
-  usable.forEach((m) => {
+  sel.appendChild(new Option(usable.length ? "— choose a model —" : "— no models yet —", ""));
+  usable.forEach((m) => {                       // option VALUE is the id, text is the label
     const label = m.is_demo
-      ? m.name + (m.needs_build ? " — not built yet" : "")
-      : `${m.name} — ${m.model} (${m.bundle_type})`;
-    sel.appendChild(new Option(label, m.name));
+      ? m.label + (m.needs_build ? " (not built yet)" : "")
+      : `${m.label} — ${m.model || ""} (${m.bundle_type || ""})`;
+    sel.appendChild(new Option(label, m.id));
   });
-  if (previous && usable.some((m) => m.name === previous)) sel.value = previous;
+  if (previous && usable.some((m) => m.id === previous)) sel.value = previous;
 }
 
 function onPredictModelSelect() {
-  const name = $("p-model-select").value;
+  const id = $("p-model-select").value;
   const status = $("p-model-status");
   status.classList.remove("is-error");
-  if (!name) {
+  if (!id) {
+    state.predictModelId = null;
     $("p-model-summary").classList.add("hidden");
     $("p-delete-model").classList.add("hidden");
+    $("p-demo-rebuild").classList.add("hidden");
     return;
   }
-  const m = state.predictModels.find((x) => x.name === name);
-  state.predictModel = { name };
+  const m = state.predictModels.find((x) => x.id === id);
+  state.predictModelId = id;
   state.predictSummary = m;
   status.textContent = "";
   renderModelSummary(m);
   const isDemo = !!(m && m.is_demo);
-  $("p-delete-model").classList.toggle("hidden", isDemo);  // demo can't be deleted
+  $("p-delete-model").classList.toggle("hidden", m.source !== "models");  // only saved models
   $("p-demo-rebuild").classList.toggle("hidden", !isDemo);
   const needsBuild = isDemo && m.needs_build;
   const needsRebuild = isDemo && m.needs_rebuild;
   if (needsBuild || needsRebuild) {
-    // Not built (or can't load here) — offer a one-click build and don't advance
-    // until it succeeds.
+    // Not built (or can't load here) — offer a one-click build and don't advance.
     $("p-demo-rebuild-btn").textContent = needsBuild ? "Build demo model" : "Rebuild demo model";
     $("p-demo-rebuild-msg").textContent = needsBuild
       ? "The demo model isn't built yet. Build it now (about 2 minutes)."
@@ -925,23 +926,24 @@ function onPredictModelSelect() {
 }
 
 async function onDeleteModel() {
-  const name = state.predictModel && state.predictModel.name;
-  if (!name) return;
-  if (!confirm(`Delete ${name}? This can't be undone.`)) return;
+  const id = state.predictModelId;
+  const m = state.predictSummary || {};
+  if (!id || m.source !== "models") return;
+  if (!confirm(`Delete ${m.label || id}? This can't be undone.`)) return;
   const status = $("p-model-status");
   try {
-    await api("/api/models?name=" + encodeURIComponent(name), { method: "DELETE" });
+    await api("/api/models?id=" + encodeURIComponent(id), { method: "DELETE" });
   } catch (e) {
     status.classList.add("is-error");
     status.textContent = "Delete failed: " + e.message;
     return;
   }
-  state.predictModel = null;
+  state.predictModelId = null;
   state.predictSummary = null;
   $("p-model-summary").classList.add("hidden");
   $("p-delete-model").classList.add("hidden");
   status.classList.remove("is-error");
-  status.textContent = `Deleted ${name}.`;
+  status.textContent = `Deleted ${m.label || id}.`;
   await loadSavedModels();
   $("p-model-select").value = "";
 }
@@ -960,13 +962,13 @@ async function onPredictModelUpload(ev) {
       headers: { "Content-Type": "application/octet-stream", "X-Filename": file.name },
       body: buf,
     });
-    state.predictModel = { path: res.model_path };
-    state.predictSummary = res.summary;
+    state.predictModelId = res.id;                  // "upload:<token>" — a real id
+    state.predictSummary = { ...res.summary, id: res.id, label: res.label, source: "uploaded" };
     status.textContent = `Loaded ${file.name}.`;
-    $("p-model-select").value = "";                 // it's an uploaded bundle, not a saved one
+    $("p-model-select").value = "";                 // it's an uploaded bundle, not in the list
     $("p-delete-model").classList.add("hidden");    // delete only applies to saved models
     $("p-demo-rebuild").classList.add("hidden");
-    renderModelSummary(res.summary);
+    renderModelSummary(state.predictSummary);
     onModelChosen();
   } catch (e) {
     status.classList.add("is-error");
@@ -990,15 +992,14 @@ function renderModelSummary(m) {
   const badge = m.is_demo ? `<span class="badge badge-demo">demo · simulated data</span>` : "";
   box.innerHTML = badge + "<table>" + rows.map(([l, v]) =>
     `<tr><td class="lbl">${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("") + "</table>";
-  // Template button in the summary card (endpoint for saved/demo models, client-side for uploads).
+  // Template button in the summary card — the endpoint resolves any model id.
   const act = document.createElement("p");
   act.className = "map-actions";
   const a = document.createElement("a");
   a.className = "btn btn-outline";
   a.textContent = "Download template for this model";
-  const nm = state.predictModel && state.predictModel.name;
-  if (nm) { a.href = "/api/models/" + encodeURIComponent(nm) + "/template.csv"; a.setAttribute("download", ""); }
-  else { a.href = "#"; a.addEventListener("click", (e) => { e.preventDefault(); downloadClientTemplate(); }); }
+  a.href = templateUrl();
+  a.setAttribute("download", "");
   act.appendChild(a);
   box.appendChild(act);
   box.classList.remove("hidden");
@@ -1015,7 +1016,7 @@ function onModelChosen() {
 async function loadDemoSubjects(key) {
   const status = $("p-upload-status");
   if (!state.ready) { blockedMsg(status); return; }
-  if (!state.predictModel) {
+  if (!state.predictModelId) {
     status.classList.add("is-error");
     status.textContent = "Choose a model first.";
     return;
@@ -1060,7 +1061,7 @@ async function onDemoBuild() {
       onDone: async () => {
         $("p-demo-rebuild-btn").disabled = false;
         await loadSavedModels();
-        $("p-model-select").value = DEMO_MODEL_NAME;
+        $("p-model-select").value = DEMO_MODEL_ID;
         onPredictModelSelect();          // now built → reveals the data step
         msg.textContent = "Demo model ready.";
         msg.classList.remove("is-error");
@@ -1244,18 +1245,15 @@ function candidateColumns() {
   return cols.filter((c) => !excluded.has(c));
 }
 
+function templateUrl() {
+  return "/api/models/" + encodeURIComponent(state.predictModelId || "") + "/template.csv";
+}
+
 function updateTemplateAndPosition() {
   const features = (state.predictSummary || {}).features || [];
   const link = $("p-template-link");
-  link.classList.toggle("hidden", !state.predictSummary);
-  const name = state.predictModel && state.predictModel.name;
-  if (name) {
-    link.href = "/api/models/" + encodeURIComponent(name) + "/template.csv";
-    link.onclick = null;
-  } else {
-    link.href = "#";
-    link.onclick = (e) => { e.preventDefault(); downloadClientTemplate(); };
-  }
+  link.classList.toggle("hidden", !state.predictModelId);
+  link.href = templateUrl();
   // Position matching needs at least as many candidate columns as features.
   $("p-match-position").disabled = !(features.length && candidateColumns().length >= features.length);
 }
@@ -1277,22 +1275,6 @@ function onMatchByPosition() {
   schedulePredictValidate();
 }
 
-function downloadClientTemplate() {
-  const features = (state.predictSummary || {}).features || [];
-  const ranges = (state.predictSummary || {}).feature_ranges || {};
-  const header = ["subject_id", ...features].join(",");
-  const row = ["", ...features.map((f) => {
-    const r = ranges[f];
-    return r && r.median != null ? r.median : "";
-  })].join(",");
-  const blob = new Blob([header + "\n" + row + "\n"], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "model_template.csv";
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-}
-
 function currentFeatureMap() {
   return { ...state.predictMap };
 }
@@ -1309,9 +1291,9 @@ function onPredictColChange() {
 }
 
 async function runPredictValidation() {
-  if (!state.predictCsvPath || !state.predictModel) return;
+  if (!state.predictCsvPath || !state.predictModelId) return;
   const body = {
-    model_ref: state.predictModel,
+    model_id: state.predictModelId,
     csv_path: state.predictCsvPath,
     feature_map: currentFeatureMap(),
     id_col: $("p-id-col").value || null,
@@ -1354,7 +1336,9 @@ function renderPredictValidation(res) {
 
 function canPredict() {
   const v = state.predictLastValidation;
-  return !!(v && (v.errors || []).length === 0 && state.predictCsvPath && state.predictModel);
+  const m = state.predictSummary || {};
+  if (m.needs_build || m.needs_rebuild) return false;   // demo not usable until built
+  return !!(v && (v.errors || []).length === 0 && state.predictCsvPath && state.predictModelId);
 }
 
 function updatePredictGating() {
@@ -1366,7 +1350,7 @@ async function onPredictRun() {
   $("p-run-error").textContent = "";
   $("p-step-results").classList.add("hidden");
   const body = {
-    model_ref: state.predictModel,
+    model_id: state.predictModelId,
     csv_path: state.predictCsvPath,
     feature_map: currentFeatureMap(),
     id_col: $("p-id-col").value || null,
@@ -1412,7 +1396,7 @@ async function onPredictCancel() {
 
 // If a predict run failed because the demo bundle couldn't load, offer a rebuild.
 function maybeOfferDemoRebuild(err) {
-  const isDemo = state.predictModel && state.predictModel.name === DEMO_MODEL_NAME;
+  const isDemo = state.predictModelId === DEMO_MODEL_ID;
   if (isDemo && /bundle|weights|could not read|load|architecture|corrupt/i.test(String(err))) {
     $("p-demo-rebuild").classList.remove("hidden");
     $("p-demo-rebuild-btn").textContent = "Rebuild demo model";

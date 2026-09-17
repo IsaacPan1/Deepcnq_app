@@ -314,24 +314,40 @@ survival curve. `predict_report.build` renders the plots, the self-contained HTM
 report and a results zip (predictions CSV, figures, report, and a copy of
 `model.json`).
 
+### Model ids (never labels)
+
+Every model is addressed by a **stable id**, distinct from its display **label**:
+`demo` (the demo), `upload:<token>` (an uploaded bundle, stored under
+`jobs/uploads/models/`), or the file stem for a saved model. `GET /api/models`
+returns `{id, label, source, needs_build, needs_rebuild, …}` where `source` is
+`demo` / `demo_cache` / `models` / `uploaded`. The dropdown's option **values are
+ids**; every request (predict validate/run, template, download, delete) sends the
+id. `demo.bundle_for_id(id)` is the **single resolver** used by the API *and* the
+predict job — this is what fixed the earlier bug where the HTTP layer knew the
+demo but the job resolved a different way and failed at 0 s. Sending a display
+label as an id is rejected with a clear 400.
+
 ### Model + predict API
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /api/models` | list saved bundles (`read_meta` each; torch-free) |
-| `GET /api/models/download?name=` | download a saved `.cnqmodel` |
-| `GET /api/models/<name>/template.csv` | a CSV template with the model's exact feature columns |
-| `DELETE /api/models?name=` | delete a saved bundle |
+| `GET /api/models` | list models with `{id, label, source, needs_build/needs_rebuild}` (torch-free) |
+| `GET /api/models/download?id=` | download a model bundle |
+| `GET /api/models/<id>/template.csv` | a CSV template with the model's exact feature columns |
+| `DELETE /api/models?id=` | delete a saved bundle (demo → 403) |
 | `POST /api/save` | start a `save` job `{source_job_id, model, bundle_type, split_index?, name}` |
-| `POST /api/predict/upload-model` | store an uploaded `.cnqmodel`, return its summary |
+| `POST /api/predict/upload-model` | store an uploaded `.cnqmodel`, return `{id, label, summary}` |
 | `POST /api/predict/upload-data` | store an uploaded CSV, return preview + columns |
-| `POST /api/predict/validate` | validate a mapping against a bundle |
-| `POST /api/predict/run` | start a `predict` job |
+| `POST /api/predict/validate` | `{model_id, csv_path, feature_map, …}` → validation (resolves the model first) |
+| `POST /api/predict/run` | start a `predict` job; a bad/unbuilt model or mapping is a **400** |
 | `GET /api/predictions?id=` | download a predict job's `predictions.csv` |
 
-Saved bundles live in `cnq_app/models/` (`paths.MODELS_DIR`); bundle names are
-sanitised (`model_io.safe_name`) to a path-safe form. Predict jobs reuse the
-existing `/api/report` and `/api/zip` job-download routes.
+The model resolves (torch-free) **before** the mapping is validated, so an
+unbuilt demo or a stale saved id returns a fast 400 rather than a job that fails
+immediately. Predict jobs reuse the existing `/api/report` and `/api/zip` routes.
+(The `/api/save` `model` field is a different axis — the trained architecture name
+within a run — and correctly uses internal names, mapping display labels back via
+`presets.resolve_model_name`.)
 
 ### Job folder cleanup (`CNQ_KEEP_RUNS`)
 

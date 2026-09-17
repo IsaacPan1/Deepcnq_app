@@ -593,27 +593,18 @@ class JobManager:
         }
 
     # ----------------------------------------------------------------- predict
-    def _resolve_bundle_path(self, cfg: dict) -> Path:
-        ref = cfg.get("model_ref") or {}
-        if ref.get("path"):
-            p = Path(ref["path"])
-            if not p.exists():
-                raise RuntimeError("the uploaded model file was not found")
-            return p
-        if ref.get("name"):
-            p = paths.MODELS_DIR / f"{_safe_name(ref['name'])}.cnqmodel"
-            if not p.exists():
-                raise RuntimeError(f"saved model {ref['name']!r} was not found")
-            return p
-        raise RuntimeError("no model was selected to predict with")
-
     def _execute_predict(self, job: Job):
+        import demo
         import model_io
         import predict as predict_mod
         import predict_report
 
         cfg = job.config
-        bundle_path = self._resolve_bundle_path(cfg)
+        # Resolve the model by id through the SAME resolver the API uses, so the
+        # demo / uploaded / saved bundles all load the same way.
+        bundle_path = demo.bundle_for_id(cfg.get("model_id"))
+        if bundle_path is None or not bundle_path.exists():
+            raise RuntimeError(f"model {cfg.get('model_id')!r} could not be found")
         job.phase = "prepare"
         job.step = "Loading the saved model"
         job._override = 0.05

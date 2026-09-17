@@ -104,7 +104,7 @@ def _save(base, run_id, model, bundle_type, name, split_index=None):
 
 def _saved_names(base):
     st, body = _http(f"{base}/api/models")
-    return [m["name"] for m in json.loads(body)["models"]]
+    return [m["id"] for m in json.loads(body)["models"]]
 
 
 # --------------------------------------------------------------------------- #
@@ -116,7 +116,7 @@ def test_save_final_bundle(trained_server):
     assert st == 200, body
     assert _poll(base, json.loads(body)["job_id"])["state"] == "done"
     assert "api-final" in _saved_names(base)
-    st, blob = _http(f"{base}/api/models/download?name=api-final")
+    st, blob = _http(f"{base}/api/models/download?id=api-final")
     assert st == 200 and blob[:2] == b"PK"  # a real zip
 
 
@@ -211,7 +211,7 @@ def test_predict_with_saved_model(trained_server):
     pdata = json.loads(body)
 
     payload = {
-        "model_ref": {"name": name}, "csv_path": pdata["csv_path"],
+        "model_id": name, "csv_path": pdata["csv_path"],
         "feature_map": {f: f for f in FEATURES},
         "id_col": None, "time_col": "survival_time", "event_col": "died",
     }
@@ -237,20 +237,21 @@ def test_predict_with_uploaded_model(trained_server):
     base, run_id, _ = trained_server
     name = _ensure_saved(base, run_id)
 
-    st, blob = _http(f"{base}/api/models/download?name={name}")
+    st, blob = _http(f"{base}/api/models/download?id={name}")
     assert st == 200
     st, body = _http(f"{base}/api/predict/upload-model", data=blob,
                      headers={"Content-Type": "application/octet-stream",
                               "X-Filename": f"{name}.cnqmodel"})
     assert st == 200, body
-    model_path = json.loads(body)["model_path"]
+    uploaded_id = json.loads(body)["id"]
+    assert uploaded_id.startswith("upload:")
 
     st, body = _http(f"{base}/api/predict/upload-data", data=paths.SAMPLE_DATA.read_bytes(),
                      headers={"Content-Type": "text/csv", "X-Filename": "new.csv"})
     csv_path = json.loads(body)["csv_path"]
 
     payload = {
-        "model_ref": {"path": model_path}, "csv_path": csv_path,
+        "model_id": uploaded_id, "csv_path": csv_path,
         "feature_map": {f: f for f in FEATURES},
         "id_col": None, "time_col": None, "event_col": None,
     }
@@ -274,7 +275,7 @@ def test_validate_flags_unmapped_feature(trained_server):
     name = _ensure_saved(base, run_id)
     frame = pd.read_csv(paths.SAMPLE_DATA).rename(columns={"feat_0": "unmatched_col"})
     csv_path = _upload_csv(base, frame)
-    payload = {"model_ref": {"name": name}, "csv_path": csv_path, "feature_map": {},
+    payload = {"model_id": name, "csv_path": csv_path, "feature_map": {},
                "id_col": None, "time_col": None, "event_col": None}
     st, body = _post(base, "/api/predict/validate", payload)
     assert st == 200
@@ -288,7 +289,7 @@ def test_run_rejects_unmapped_with_400(trained_server):
     name = _ensure_saved(base, run_id)
     frame = pd.read_csv(paths.SAMPLE_DATA).rename(columns={"feat_0": "unmatched_col"})
     csv_path = _upload_csv(base, frame)
-    payload = {"model_ref": {"name": name}, "csv_path": csv_path, "feature_map": {},
+    payload = {"model_id": name, "csv_path": csv_path, "feature_map": {},
                "id_col": None, "time_col": None, "event_col": None}
     st, body = _post(base, "/api/predict/run", payload)
     assert st == 400 and b"aren't mapped" in body
@@ -298,7 +299,7 @@ def test_run_rejects_duplicate_with_400(trained_server):
     base, run_id, _ = trained_server
     name = _ensure_saved(base, run_id)
     csv_path = _upload_csv(base, pd.read_csv(paths.SAMPLE_DATA))
-    payload = {"model_ref": {"name": name}, "csv_path": csv_path,
+    payload = {"model_id": name, "csv_path": csv_path,
                "feature_map": {"feat_0": "feat_0", "feat_1": "feat_0"},  # two -> one column
                "id_col": None, "time_col": None, "event_col": None}
     st, body = _post(base, "/api/predict/run", payload)
@@ -318,14 +319,27 @@ def test_template_download_and_roundtrip(trained_server):
     st, body = _http(f"{base}/api/predict/upload-data", data=("\n".join(lines) + "\n").encode(),
                      headers={"Content-Type": "text/csv", "X-Filename": "filled_template.csv"})
     csv_path = json.loads(body)["csv_path"]
-    payload = {"model_ref": {"name": name}, "csv_path": csv_path, "feature_map": {},
+    payload = {"model_id": name, "csv_path": csv_path, "feature_map": {},
                "id_col": "subject_id", "time_col": None, "event_col": None}
     st, body = _post(base, "/api/predict/validate", payload)
     v = json.loads(body)
     assert v["errors"] == [] and v["summary"]["n_matched"] == len(FEATURES)
 
 
-def test_run_payload_includes_feature_map():
-    # Guard against a UI-vs-API mismatch: app.js must send the mapping.
+def test_run_payload_matches_api(trained_server):
+    # Guard against UI-vs-API mismatch: app.js sends the id and the mapping, and
+    # the server accepts exactly that shape.
     src = (APP_DIR / "static" / "app.js").read_text(encoding="utf-8")
     assert "feature_map: currentFeatureMap()" in src
+    assert "model_id: state.predictModelId" in src
+    assert "model_ref" not in src        # no display-label lookups remain
+
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id)
+    csv_path = _upload_csv(base, pd.read_csv(paths.SAMPLE_DATA))
+    payload = {"model_id": name, "csv_path": csv_path,
+               "feature_map": {f: f for f in FEATURES},
+               "id_col": None, "time_col": None, "event_col": None}
+    st, body = _post(base, "/api/predict/run", payload)
+    assert st == 200, body
+    assert _poll(base, json.loads(body)["job_id"])["state"] == "done"
