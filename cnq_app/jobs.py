@@ -204,6 +204,8 @@ class JobManager:
                 self._execute_demo(job)
             elif job.kind == "project":
                 self._execute_project(job)
+            elif job.kind == "tune":
+                self._execute_tune(job)
             else:
                 self._execute(job)
             if job.cancel_event.is_set():
@@ -711,6 +713,38 @@ class JobManager:
         job.phase = "report"
         artifacts = project_report.build(job.dir, meta, proj, queries)
         job.results = {"kind": "project", **artifacts}
+
+    # ----------------------------------------------------------------- auto-tune
+    def _execute_tune(self, job: Job):
+        """Bounded model/hyper-parameter search; ranks candidates by validation
+        pinball and returns a leaderboard + the winner (best-so-far on cancel)."""
+        import autotune
+        import grids
+
+        cfg = job.config
+        raw = pipeline.load_frame(cfg["csv_path"])
+        frame = pipeline.build_frame(
+            raw, cfg["duration_col"], cfg["event_col"], cfg["feature_cols"],
+            id_col=cfg.get("id_col") or None, event_positive=cfg.get("event_positive"))
+        quantiles = grids.resolve(cfg)
+        ratio = tuple(float(r) for r in cfg["ratio"])
+        seed = int(cfg.get("seed", 42))
+        job.phase = "train"
+        job.step = "Searching settings"
+        job._override = 0.02
+
+        def progress(done, total, best):
+            job._override = min(0.97, done / max(total, 1))
+            job.step = f"Trial {done} of {total}" + (
+                f" · best {best['model']} pinball {best['valid_pinball']:.4f}" if best else "")
+
+        res = autotune.run_search(
+            frame, cfg["feature_cols"], quantiles, ratio, seed,
+            enabled_models=cfg.get("enabled_models"), n_trials=int(cfg.get("n_trials", 12)),
+            n_splits=int(cfg.get("n_splits", 1)), deterministic=bool(cfg.get("deterministic", False)),
+            time_budget=cfg.get("time_budget"), progress=progress,
+            cancel=job.cancel_event.is_set)
+        job.results = {"kind": "tune", **res}
 
 
 def _safe_name(name: str) -> str:

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="/style.css?v=10">
+  <link rel="stylesheet" href="/style.css?v=11">
 </head>
 <body>
 <header class="masthead">
@@ -128,32 +128,75 @@ S002,36.0,0,64,1.2,0</pre>
   <section class="card step hidden" id="step-config">
     <h2><span class="num">3</span> Models and settings</h2>
 
-    <p class="field-label">Models</p>
-    <div id="model-list" class="chips chips-lg"></div>
-
-    <p class="field-label">Hyperparameters</p>
     <div class="segmented" role="radiogroup">
-      <label><input type="radio" name="mode" value="preset" checked> Paper preset</label>
-      <label><input type="radio" name="mode" value="custom"> Custom</label>
+      <label><input type="radio" name="settings-mode" value="manual" checked> Choose settings</label>
+      <label><input type="radio" name="settings-mode" value="auto"> Auto-tune</label>
     </div>
 
-    <div id="preset-block" class="subpanel">
-      <label>Starting settings
-        <select id="preset-select"></select>
+    <div id="manual-block">
+      <p class="field-label">Models</p>
+      <div id="model-list" class="chips chips-lg"></div>
+
+      <p class="field-label">Hyperparameters</p>
+      <div class="segmented" role="radiogroup">
+        <label><input type="radio" name="mode" value="preset" checked> Paper preset</label>
+        <label><input type="radio" name="mode" value="custom"> Custom</label>
+      </div>
+
+      <div id="preset-block" class="subpanel">
+        <label>Starting settings
+          <select id="preset-select"></select>
+        </label>
+        <p class="muted">Hyperparameters tuned in the paper on a dataset of similar size. Your data is not combined with it.</p>
+      </div>
+
+      <div id="custom-block" class="hidden subpanel grid-custom">
+        <label>Hidden width <input type="number" id="c-hidden" value="64" min="1"></label>
+        <label>Layers <input type="number" id="c-layers" value="2" min="1"></label>
+        <label>Dropout <input type="number" id="c-dropout" value="0" step="0.05" min="0" max="0.9"></label>
+        <label>Spline grid size <input type="number" id="c-grid" value="5" min="1"></label>
+        <label>Learning rate <input type="number" id="c-lr" value="0.0005" step="0.0001"></label>
+        <label>Weight decay <input type="number" id="c-wd" value="0" step="0.0001"></label>
+        <label>Batch size <input type="number" id="c-batch" value="64" min="1"></label>
+        <label>Max epochs <input type="number" id="c-epochs" value="200" min="1"></label>
+        <label>Early-stop patience <input type="number" id="c-patience" value="10" min="1"></label>
+      </div>
+    </div>
+
+    <div id="autotune-block" class="hidden subpanel">
+      <p class="muted">Search several models and settings on your data, then apply the best.
+        Selected by validation IPCW pinball; you then train the winner normally.</p>
+      <p class="field-label">Model families to try</p>
+      <div class="chips" id="tune-families">
+        <label class="inline"><input type="checkbox" value="KAN_gaps" checked> KAN-CNQ</label>
+        <label class="inline"><input type="checkbox" value="MLP_multiQ_gaps" checked> MLP-CNQ</label>
+        <label class="inline"><input type="checkbox" value="TransformerPS_gaps"> Trans-CNQ</label>
+        <label class="inline"><input type="checkbox" value="Transformer_KAN_gaps"> TransKAN-CNQ</label>
+        <span class="muted">Transformers help only for nonstandard / cross-modality data.</span>
+      </div>
+      <label>Search effort
+        <select id="tune-effort">
+          <option value="quick">Quick (~6 trials)</option>
+          <option value="standard" selected>Standard (~12 trials)</option>
+          <option value="thorough">Thorough (~24 trials, repeated splits)</option>
+        </select>
       </label>
-      <p class="muted">Hyperparameters tuned in the paper on a dataset of similar size. Your data is not combined with it.</p>
-    </div>
-
-    <div id="custom-block" class="hidden subpanel grid-custom">
-      <label>Hidden width <input type="number" id="c-hidden" value="64" min="1"></label>
-      <label>Layers <input type="number" id="c-layers" value="2" min="1"></label>
-      <label>Dropout <input type="number" id="c-dropout" value="0" step="0.05" min="0" max="0.9"></label>
-      <label>Spline grid size <input type="number" id="c-grid" value="5" min="1"></label>
-      <label>Learning rate <input type="number" id="c-lr" value="0.0005" step="0.0001"></label>
-      <label>Weight decay <input type="number" id="c-wd" value="0" step="0.0001"></label>
-      <label>Batch size <input type="number" id="c-batch" value="64" min="1"></label>
-      <label>Max epochs <input type="number" id="c-epochs" value="200" min="1"></label>
-      <label>Early-stop patience <input type="number" id="c-patience" value="10" min="1"></label>
+      <div class="actions">
+        <button id="tune-btn" class="primary">Find best settings</button>
+        <button id="tune-cancel-btn" class="ghost-danger hidden">Cancel</button>
+      </div>
+      <p id="tune-error" class="error"></p>
+      <div id="tune-progress-wrap" class="progress hidden" aria-live="polite">
+        <div class="progress-head"><span class="spinner" aria-hidden="true"></span>
+          <span id="tune-progress-step">Starting</span></div>
+        <div class="bar"><div id="tune-bar-fill"></div></div>
+        <div id="tune-progress-detail" class="progress-detail"></div>
+      </div>
+      <div id="tune-results" class="hidden">
+        <p class="field-label">Leaderboard <span class="muted">lower validation pinball is better</span></p>
+        <div class="table-scroll"><table id="tune-table"></table></div>
+        <div class="actions"><button id="tune-use-best" class="primary">Use best settings</button></div>
+      </div>
     </div>
 
     <label>Quantile levels
@@ -468,6 +511,6 @@ S002,36.0,0,64,1.2,0</pre>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js?v=10"></script>
+<script src="/app.js?v=11"></script>
 </body>
 </html>

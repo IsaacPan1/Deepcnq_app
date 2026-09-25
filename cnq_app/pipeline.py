@@ -300,6 +300,8 @@ class TrainOutput:
     # CPU copy of the trained weights, always captured so a later "save model"
     # step can bundle the exact in-session model (single split / ensemble).
     state_dict: Any = None
+    # best validation IPCW-pinball (early-stopping metric) -- auto-tune ranks on this.
+    valid_pinball: Any = None
 
 
 def train_model_on_split(model_name: str, resolved: dict, prepared: PreparedData,
@@ -322,6 +324,7 @@ def train_model_on_split(model_name: str, resolved: dict, prepared: PreparedData
     test_pred = _predict_original(model, prepared.test["X"], device)
     metrics = evaluate_split(prepared, test_pred, quantiles, include_unoc=include_unoc)
     cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+    valid = state.get("best_valid_trainG_pinball_mean")
     return TrainOutput(
         model_name=model_name, split_index=split_index, best_epoch=state["best_epoch"],
         epochs_ran=state["epochs_ran"], early_stopped=state["early_stopped"],
@@ -329,6 +332,7 @@ def train_model_on_split(model_name: str, resolved: dict, prepared: PreparedData
         keep_model=model if keep_for_plots else None,
         prepared=prepared if keep_for_plots else None,
         state_dict=cpu_state,
+        valid_pinball=float(valid) if valid is not None else None,
     )
 
 

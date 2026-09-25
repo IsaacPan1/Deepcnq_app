@@ -165,6 +165,10 @@ def run_validation(cfg: dict) -> dict:
     summary = result.get("summary", {})
     result["suggested_preset"] = presets.suggest_preset(
         summary.get("rows_used"), summary.get("censoring_pct"))
+    # Data-driven default hyper-parameters (pre-fills the Custom fields).
+    result["suggested_custom"] = presets.defaults(
+        summary.get("rows_used") or 0, summary.get("n_features"),
+        summary.get("censoring_pct"))
     return result
 
 
@@ -349,6 +353,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_demo_build()
             if route == "/api/project/run":
                 return self._handle_project_run()
+            if route == "/api/tune/run":
+                return self._handle_tune_run()
             return self._error("not found", 404)
         except Exception as exc:  # noqa: BLE001
             return self._error(f"{type(exc).__name__}: {exc}", 500)
@@ -756,6 +762,31 @@ class Handler(SimpleHTTPRequestHandler):
         if manager.active() is not None:
             return self._error("a job is already running", 409)
         job = manager.start({"kind": "predict", **cfg})
+        self._send_json({"job_id": job.id, **job.status()})
+
+    def _handle_tune_run(self):
+        if not self._repo_ready():
+            return
+        import grids
+        import presets
+        cfg = json.loads(self._read_body() or b"{}")
+        if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
+            return self._error("upload a CSV first")
+        if not cfg.get("feature_cols"):
+            return self._error("select at least one feature column")
+        cfg["quantiles"] = grids.resolve(cfg)
+        try:
+            data_report = run_validation(cfg)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(f"could not validate data: {exc}")
+        if data_report["errors"]:
+            return self._error("; ".join(m["message"] for m in data_report["errors"]))
+        enabled = [m for m in (cfg.get("enabled_models") or []) if m in presets.TUNE_ALLOWED_MODELS]
+        cfg["enabled_models"] = enabled or list(presets.TUNE_DEFAULT_MODELS)
+        manager = _get_manager()
+        if manager.active() is not None:
+            return self._error("a job is already running", 409)
+        job = manager.start({"kind": "tune", **cfg})
         self._send_json({"job_id": job.id, **job.status()})
 
     def _handle_project_run(self):

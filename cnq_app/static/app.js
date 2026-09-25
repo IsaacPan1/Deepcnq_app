@@ -27,6 +27,9 @@ const state = {
   // save-model panel (Train results)
   runModels: [],         // models the finished run trained (for the Save panel)
   runSplits: 1,          // repeated splits the finished run used
+  tuneJobId: null,       // auto-tune search job
+  tuneBest: null,        // winning {model, custom, ...} from the search
+  customTouched: false,  // user edited a custom field -> stop auto-filling defaults
   saveJobId: null,
   // predict tab
   predictModelId: null,  // stable model id (demo | upload:<t> | saved stem)
@@ -162,6 +165,110 @@ async function init() {
     $(id).addEventListener("change", scheduleValidate));
   $("run-btn").addEventListener("click", onRun);
   $("cancel-btn").addEventListener("click", onCancel);
+  // auto-tune
+  document.querySelectorAll('input[name=settings-mode]').forEach((r) =>
+    r.addEventListener("change", onSettingsModeChange));
+  $("tune-btn").addEventListener("click", onFindBest);
+  $("tune-cancel-btn").addEventListener("click", onTuneCancel);
+  $("tune-use-best").addEventListener("click", onUseBest);
+  ["c-hidden", "c-layers", "c-dropout", "c-grid", "c-lr", "c-wd", "c-batch", "c-epochs",
+   "c-patience"].forEach((id) => $(id).addEventListener("input", () => { state.customTouched = true; }));
+}
+
+function onSettingsModeChange() {
+  const mode = document.querySelector('input[name=settings-mode]:checked').value;
+  $("manual-block").classList.toggle("hidden", mode !== "manual");
+  $("autotune-block").classList.toggle("hidden", mode !== "auto");
+}
+
+// Pre-fill the Custom fields with data-driven defaults (until the user edits them).
+function applySuggestedCustom(c) {
+  if (!c) return;
+  const set = (id, v) => { if (v !== undefined && v !== null) $(id).value = v; };
+  set("c-hidden", c.hidden_dim); set("c-layers", c.layers); set("c-dropout", c.dropout);
+  set("c-grid", c.grid_size); set("c-lr", c.learning_rate); set("c-wd", c.weight_decay);
+  set("c-batch", c.batch_size); set("c-epochs", c.maximum_epochs); set("c-patience", c.patience);
+}
+
+async function onFindBest() {
+  $("tune-error").textContent = "";
+  if (!state.csvPath) { $("tune-error").textContent = "Upload data first."; return; }
+  const families = [...document.querySelectorAll("#tune-families input:checked")].map((c) => c.value);
+  if (!families.length) { $("tune-error").textContent = "Choose at least one model family."; return; }
+  const eff = { quick: [6, 1], standard: [12, 1], thorough: [24, 3] }[$("tune-effort").value] || [12, 1];
+  const kind = $("quantile-grid").value;
+  const body = {
+    csv_path: state.csvPath, duration_col: $("duration-col").value, event_col: $("event-col").value,
+    feature_cols: [...state.features], id_col: state.idCol || null, event_positive: state.eventPositive,
+    quantile_grid: { kind, custom: kind === "custom" ? customLevels() : null },
+    ratio: currentRatio(), n_splits: eff[1], seed: +$("seed").value || 42,
+    deterministic: $("deterministic").checked, enabled_models: families, n_trials: eff[0],
+  };
+  $("tune-btn").disabled = true;
+  $("tune-results").classList.add("hidden");
+  try {
+    const res = await api("/api/tune/run", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    state.tuneJobId = res.job_id;
+    $("tune-cancel-btn").classList.remove("hidden");
+    $("tune-progress-wrap").classList.remove("hidden");
+    $("tune-progress-wrap").dataset.state = "pending";
+    $("tune-bar-fill").style.width = "0%";
+    pollJob(res.job_id, {
+      onProgress: (s) => renderProgress("tune-progress-wrap", "tune-progress-step",
+        "tune-bar-fill", "tune-progress-detail", s),
+      onDone: loadTuneResults,
+      onCancelled: loadTuneResults,   // show best-so-far
+      onError: (e) => {
+        $("tune-btn").disabled = false;
+        $("tune-cancel-btn").classList.add("hidden");
+        $("tune-error").textContent = "Search failed: " + e;
+      },
+    });
+  } catch (e) {
+    $("tune-btn").disabled = false;
+    $("tune-error").textContent = "Search failed: " + e.message;
+  }
+}
+
+async function onTuneCancel() {
+  if (!state.tuneJobId) return;
+  await api("/api/cancel?id=" + state.tuneJobId, { method: "POST" });
+  $("tune-progress-step").textContent = "Cancelling…";
+}
+
+async function loadTuneResults() {
+  $("tune-btn").disabled = false;
+  $("tune-cancel-btn").classList.add("hidden");
+  let r;
+  try { r = await api("/api/results?id=" + state.tuneJobId); }
+  catch (e) { $("tune-error").textContent = "Could not load results: " + e.message; return; }
+  state.tuneBest = r.best;
+  const lb = r.leaderboard || [];
+  const cols = ["#", "Model", "hidden", "layers", "dropout", "lr", "wd", "valid pinball", "test pinball"];
+  const rows = lb.map((t) => [t.rank, (MODEL_INFO[t.model] || {}).name || t.model,
+    t.custom.hidden_dim, t.custom.layers, t.custom.dropout, t.custom.learning_rate,
+    t.custom.weight_decay, (+t.valid_pinball).toFixed(4), (+t.test_pinball).toFixed(4)]);
+  fillTable($("tune-table"), cols, rows);
+  $("tune-results").classList.remove("hidden");
+  $("tune-use-best").disabled = !state.tuneBest;
+  if (!lb.length) $("tune-error").textContent = "No trials completed.";
+}
+
+function onUseBest() {
+  const b = state.tuneBest;
+  if (!b) return;
+  state.models = new Set([b.model]);           // select the winning model
+  buildModelChips();
+  document.querySelector('input[name=mode][value=custom]').checked = true;
+  onModeChange();
+  applySuggestedCustom(b.custom);              // fill its hyper-parameters
+  state.customTouched = true;
+  document.querySelector('input[name=settings-mode][value=manual]').checked = true;
+  onSettingsModeChange();                      // back to Manual so the user can Start training
+  updateGating();
+  scheduleValidate();
 }
 
 function buildModelChips() {
@@ -469,6 +576,9 @@ function warnKey(w) { return `${w.code}:${w.column || ""}`; }
 function renderValidation(result) {
   const panel = $("validation-panel");
   panel.classList.remove("hidden");
+
+  // Pre-fill Custom hyper-parameters with data-driven defaults until the user edits them.
+  if (result.suggested_custom && !state.customTouched) applySuggestedCustom(result.suggested_custom);
 
   // Event mapping control (two non-0/1 values).
   const twoVal = (result.errors || []).find((e) => e.code === "event_two_values");

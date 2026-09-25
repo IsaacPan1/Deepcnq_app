@@ -104,11 +104,22 @@ results — the app checks this and warns you before training.
 
 ## Settings
 
-**Starting settings** reuse the hyperparameters the paper tuned on a public
-dataset of similar size — SUPPORT, FLCHAIN, GBSG, GBSG500, METABRIC or NKI70,
-each shown with its rough size and censoring. After you upload, the closest one
-is marked **suggested**. Only the settings are reused; your data is never
-combined with those datasets. Choose **Custom** to set the values yourself.
+**Choose settings** (default): pick a model and its hyperparameters. **Starting
+settings** reuse the values the paper tuned on a public dataset of similar size —
+SUPPORT, FLCHAIN, GBSG, GBSG500, METABRIC or NKI70; after you upload, the closest
+one is marked **suggested** (your data is never combined with those datasets).
+Choose **Custom** to set values yourself — these are **pre-filled from your data's
+size and covariate count**, so they're a sensible starting point you can edit.
+
+**Auto-tune** (alternative): let the app search several models and settings on
+*your* data and pick the best. Tick the **model families** to try — **KAN-CNQ and
+MLP-CNQ** by default (transformers are opt-in, only for nonstandard /
+cross-modality data) — choose a **search effort** (Quick / Standard / Thorough),
+and click **Find best settings**. Each candidate is scored by validation IPCW
+pinball (with a reduced training budget); you get a **leaderboard**, and **Use
+best settings** fills in the winner so you can review and **Start training**
+normally. The search is bounded and cancellable — cancelling still shows the best
+found so far.
 
 **Quantile levels** are the points on each subject's survival-time distribution
 the model predicts. The default (0.1, 0.25, 0.5, 0.75, 0.9) is a good start;

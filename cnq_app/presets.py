@@ -13,9 +13,17 @@ from typing import Any
 import paths
 from deepquantreg.config import load_config
 
-# Models the UI exposes. The three CNQ models plus the optional MLP baseline.
-APP_MODELS = ("KAN_gaps", "TransformerPS_gaps", "Transformer_KAN_gaps", "MLP_multiQ")
+# Models the UI exposes: KAN and the non-crossing MLP first (the preferred
+# families), then the attention models, then the plain MLP baseline.
+APP_MODELS = ("KAN_gaps", "MLP_multiQ_gaps", "TransformerPS_gaps",
+              "Transformer_KAN_gaps", "MLP_multiQ")
 TRANSFORMER_MODELS = ("TransformerPS_gaps", "Transformer_KAN_gaps")
+
+# Auto-tune searches KAN + non-crossing MLP by default; transformers are opt-in
+# (useful only for nonstandard / cross-modality data).
+TUNE_DEFAULT_MODELS = ("KAN_gaps", "MLP_multiQ_gaps")
+TUNE_ALLOWED_MODELS = ("KAN_gaps", "MLP_multiQ_gaps", "TransformerPS_gaps",
+                       "Transformer_KAN_gaps", "MLP_multiQ")
 
 # Display labels the front end shows (mirror of MODEL_INFO in static/app.js). The
 # API stores/uses the internal names on the left; these let the server map a
@@ -142,6 +150,49 @@ def preset_summary() -> dict[str, Any]:
         "models": list(APP_MODELS),
         "transformer_models": list(TRANSFORMER_MODELS),
     }
+
+
+def defaults(n: int, p: int | None = None, censoring: float | None = None) -> dict[str, Any]:
+    """Data-driven default hyper-parameters from sample size ``n`` and covariate
+    count ``p``. Small data -> narrower net, more regularisation, smaller batch;
+    large data -> wider/deeper, less regularisation. Values stay divisible by
+    ``nhead`` so they're valid for the transformer models too. Used as the Manual
+    default (pre-filled after upload) and as the centre of the auto-tune space.
+    """
+    n = int(n or 0)
+    if n < 500:
+        hidden, layers, dropout, wd, batch, patience = 32, 2, 0.2, 1e-3, 32, 20
+    elif n < 2000:
+        hidden, layers, dropout, wd, batch, patience = 64, 2, 0.1, 1e-4, 64, 12
+    else:
+        hidden, layers, dropout, wd, batch, patience = 128, 3, 0.0, 0.0, 128, 10
+    if p and p >= 20:
+        hidden = max(hidden, 64)
+    return {"hidden_dim": hidden, "layers": layers, "dropout": dropout, "grid_size": 5,
+            "learning_rate": 1e-3, "weight_decay": wd, "batch_size": batch,
+            "maximum_epochs": 300, "patience": patience}
+
+
+def auto_space(n: int, p: int | None = None,
+               enabled_models: "list[str] | None" = None) -> dict[str, dict]:
+    """Per-model candidate values for the auto-tune search, centred on
+    :func:`defaults`. Only the meaningful architecture axes vary; epochs / patience
+    / batch are fixed by the caller (short during search, full when reported)."""
+    base = defaults(n, p)
+    h = base["hidden_dim"]
+    small = int(n or 0) < 500
+    common = {
+        "hidden_dim": sorted({max(16, h // 2), h, h * 2}),
+        "layers": [1, 2] if small else [2, 3],
+        "dropout": [0.1, 0.2, 0.3] if small else [0.0, 0.1, 0.2],
+        "learning_rate": [3e-4, 1e-3, 3e-3],
+        "weight_decay": [0.0, 1e-4, 1e-3],
+        "grid_size": [5],
+    }
+    models = [m for m in (enabled_models or TUNE_DEFAULT_MODELS) if m in TUNE_ALLOWED_MODELS]
+    if not models:
+        models = list(TUNE_DEFAULT_MODELS)
+    return {m: {k: list(v) for k, v in common.items()} for m in models}
 
 
 def resolve(model: str, *, preset: str | None, custom: dict | None,

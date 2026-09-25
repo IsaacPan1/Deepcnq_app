@@ -343,6 +343,7 @@ label as an id is rejected with a clear 400.
 | `GET /api/predictions?id=` | download a predict job's `predictions.csv` |
 | `POST /api/project/run` | start a `project` job `{model_id, mode, n?/csv_path?+feature_map?, time_points?, target_events?}` |
 | `GET /api/projection?id=` | download a project job's `projection.csv` |
+| `POST /api/tune/run` | start a `tune` job `{csv_path, mapping…, enabled_models, n_trials, n_splits}` → leaderboard |
 
 The model resolves (torch-free) **before** the mapping is validated, so an
 unbuilt demo or a stale saved id returns a fast 400 rather than a job that fails
@@ -350,6 +351,31 @@ immediately. Predict jobs reuse the existing `/api/report` and `/api/zip` routes
 (The `/api/save` `model` field is a different axis — the trained architecture name
 within a run — and correctly uses internal names, mapping display labels back via
 `presets.resolve_model_name`.)
+
+### Auto-tune (`autotune.py`, `presets.defaults` / `presets.auto_space`)
+
+`presets.defaults(n, p, censoring)` gives data-driven default hyper-parameters
+(smaller/regularised for small data, wider/deeper for large; values divisible by
+`nhead`). It pre-fills the Custom fields (surfaced as `suggested_custom` on
+`/api/validate`) and centres the search space `presets.auto_space(n, p,
+enabled_models)`.
+
+`autotune.run_search(...)` is a **random search** over KAN + non-crossing MLP by
+default (transformers opt-in via `TUNE_ALLOWED_MODELS`), bounded by a trial count
+(and optional wall-clock). Each trial trains 1 split (Thorough averages 2–3) with a
+**reduced** epoch budget (`SEARCH_EPOCHS`) and is ranked by **validation** IPCW
+pinball (`TrainOutput.valid_pinball`, from `fit`'s `best_valid_trainG_pinball_mean`
+— held out from the untouched test split). The winner's *reported* config uses the
+full epoch budget, so applying it and training normally is honest. `cancel` is
+checked at trial boundaries, so cancelling returns the best-so-far leaderboard.
+
+Runs as a job (`kind: "tune"` → `JobManager._execute_tune`, progress = "trial i of
+N · best so far"). `POST /api/tune/run` validates the data (same rules as `/api/run`),
+filters `enabled_models` to the allowed set, and starts the job; `/api/results`
+returns `{leaderboard, best, …}`. The UI's **Use best settings** selects the
+winning model chip and fills Custom, then the user trains via the normal run — so
+auto-tune adds no new results/report surface. `MLP_multiQ_gaps` ("MLP-CNQ") is now
+in `APP_MODELS`, so the tuned non-crossing MLP is selectable and trainable.
 
 ### Population / cohort projection (`project.py`, `project_report.py`)
 
@@ -510,6 +536,7 @@ cd deepcnq && git pull
 | `predict_report.py` | prediction plots, HTML report and results zip |
 | `project.py` | population/cohort cumulative-event projection + A/B queries (torch-free math) |
 | `project_report.py` | projection curve plot, HTML report and results zip |
+| `autotune.py` | bounded model/hyper-parameter random search, ranked by validation pinball |
 | `validation.py` | data-spec checks (errors/warnings/summary) used by upload, validate and run |
 | `presets.py` | resolve hyper-parameters from `cnq.yaml`; preset labels + closest-cohort suggestion |
 | `grids.py` | quantile-grid generation (kinds, rounding, required levels, standard subset) |
@@ -531,3 +558,4 @@ cd deepcnq && git pull
 | `tests/test_api_save_predict.py` | HTTP payload-level save (all bundle types, display name, 400s) + predict |
 | `tests/test_demo.py` | demo generation, committed bundle predict/flags, delete protection |
 | `tests/test_project.py` | projection math (population/cohort, A/B queries, range guard) |
+| `tests/test_autotune.py` | defaults/space sizing, MLP-CNQ selectable, search ranking + cancel |

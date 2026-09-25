@@ -370,6 +370,23 @@ def test_project_population_needs_N(trained_server):
     assert st == 400
 
 
+def test_tune_run_leaderboard(trained_server):
+    base, _, _ = trained_server
+    csv_path = _upload_csv(base, pd.read_csv(paths.SAMPLE_DATA))
+    body = {"csv_path": csv_path, "duration_col": "survival_time", "event_col": "died",
+            "feature_cols": FEATURES, "quantile_grid": {"kind": "standard"},
+            "ratio": [65, 15, 20], "seed": 42, "n_splits": 1,
+            "enabled_models": ["KAN_gaps", "MLP_multiQ_gaps"], "n_trials": 3, "deterministic": True}
+    st, out = _post(base, "/api/tune/run", body)
+    assert st == 200, out
+    pid = json.loads(out)["job_id"]
+    assert _poll(base, pid, timeout=900)["state"] == "done"
+    st, res = _http(f"{base}/api/results?id={pid}")
+    r = json.loads(res)
+    assert r["leaderboard"] and r["best"]["rank"] == 1
+    assert set(t["model"] for t in r["leaderboard"]) <= {"KAN_gaps", "MLP_multiQ_gaps"}
+
+
 def test_run_payload_matches_api(trained_server):
     # Guard against UI-vs-API mismatch: app.js sends the id and the mapping, and
     # the server accepts exactly that shape.

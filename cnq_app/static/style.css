@@ -477,7 +477,7 @@ iframe#report-frame, iframe#p-report-frame, iframe#pr-report-frame {
 }
 
 /* Progress bars for the predict + save widgets share the training bar's look */
-#p-bar-fill, #save-bar-fill, #p-demo-rebuild-fill, #pr-bar-fill {
+#p-bar-fill, #save-bar-fill, #p-demo-rebuild-fill, #pr-bar-fill, #tune-bar-fill {
   height: 100%;
   width: 0;
   border-radius: inherit;
