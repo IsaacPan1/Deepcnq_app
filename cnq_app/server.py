@@ -149,7 +149,7 @@ def guess_mapping(columns: list[str], numeric: list[str], binary: list[str]) -> 
 def run_validation(cfg: dict) -> dict:
     """Load the CSV named in cfg and run validation.validate against the mapping.
 
-    Also attaches ``suggested_preset`` (closest paper cohort by size/censoring).
+    Also attaches ``suggested_custom`` (data-driven default hyper-parameters).
     """
     import pipeline
     import presets
@@ -163,9 +163,7 @@ def run_validation(cfg: dict) -> dict:
         seed=int(cfg.get("seed", 42)), n_splits=int(cfg.get("n_splits", 1)),
         event_positive=cfg.get("event_positive"))
     summary = result.get("summary", {})
-    result["suggested_preset"] = presets.suggest_preset(
-        summary.get("rows_used"), summary.get("censoring_pct"))
-    # Data-driven default hyper-parameters (pre-fills the Custom fields).
+    # Data-driven default hyper-parameters (pre-fills the settings fields).
     result["suggested_custom"] = presets.defaults(
         summary.get("rows_used") or 0, summary.get("n_features"),
         summary.get("censoring_pct"))
@@ -208,9 +206,6 @@ def validate_run(cfg: dict) -> list[str]:
         errors.append("split ratio must be three non-negative numbers")
     if int(cfg.get("n_splits", 1)) < 1:
         errors.append("number of splits must be >= 1")
-    mode = cfg.get("mode", "preset")
-    if mode == "preset" and not cfg.get("preset"):
-        errors.append("choose a preset or switch to custom hyper-parameters")
     if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
         errors.append("upload a CSV first")
     return errors
@@ -367,8 +362,7 @@ class Handler(SimpleHTTPRequestHandler):
         import presets
 
         self._send_json({
-            **presets.preset_summary(),
-            "preset_names": presets.preset_names(),
+            "models": list(presets.TABULAR_MODELS),
             "required_quantiles": list(pipeline.REQUIRED_QUANTILES),
             "has_sample": SAMPLE_DATA.exists(),
         })

@@ -78,17 +78,21 @@ def test_standard_present():
 
 
 # --------------------------------------------------------------------------- #
-# preset labels + suggestion
+# data-driven defaults
 # --------------------------------------------------------------------------- #
-def test_preset_label_metabric():
-    assert presets.preset_label("metabric") == "METABRIC (≈1,900 subjects, 42% censored)"
+def test_defaults_scale_with_sample_size():
+    small = presets.defaults(200)
+    large = presets.defaults(5000)
+    assert small["hidden_dim"] < large["hidden_dim"]
+    assert small["dropout"] >= large["dropout"]      # more regularisation on small data
+    assert small["batch_size"] <= large["batch_size"]
 
 
-def test_suggest_preset_uses_size_then_censoring():
-    # tiny cohort -> nki70 (144); large -> support (8873)
-    assert presets.suggest_preset(150, 65) == "nki70"
-    assert presets.suggest_preset(9000, 30) == "support"
-    assert presets.suggest_preset(1900, 42) == "metabric"
+def test_tune_models_are_tabular_only():
+    assert presets.TABULAR_MODELS == ("KAN_gaps", "MLP_multiQ_gaps")
+    assert presets.TUNE_ALLOWED_MODELS == presets.TABULAR_MODELS
+    for m in presets.TRANSFORMER_MODELS:
+        assert m not in presets.TUNE_ALLOWED_MODELS
 
 
 # --------------------------------------------------------------------------- #

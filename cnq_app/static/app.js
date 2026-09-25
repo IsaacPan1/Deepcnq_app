@@ -14,8 +14,6 @@ const state = {
   eventValues: null,     // the two distinct values, when mapping is needed
   timeUnit: "",
   guess: null,
-  suggestedPreset: null,
-  presetTouched: false,
   config: null,
   lastValidation: null,
   acks: new Set(),       // acknowledged warning keys
@@ -147,15 +145,11 @@ async function init() {
   initTabs();
   initPredict();
   initProject();
-  if (!health.ok) return;  // the rest (config, model/preset chips, run) needs the stack
+  if (!health.ok) return;  // the rest (config, model chips, run) needs the stack
   state.config = await api("/api/config");
   buildModelChips();
-  buildPresetSelect();
-  document.querySelectorAll('input[name=mode]').forEach((r) =>
-    r.addEventListener("change", onModeChange));
   $("quantile-grid").addEventListener("change", onQuantileChange);
   $("quantile-custom").addEventListener("input", onQuantileChange);
-  $("preset-select").addEventListener("change", () => { state.presetTouched = true; });
   onQuantileChange();
   $("duration-col").addEventListener("change", onMappingSelectChange);
   $("event-col").addEventListener("change", onEventColChange);
@@ -261,8 +255,6 @@ function onUseBest() {
   if (!b) return;
   state.models = new Set([b.model]);           // select the winning model
   buildModelChips();
-  document.querySelector('input[name=mode][value=custom]').checked = true;
-  onModeChange();
   applySuggestedCustom(b.custom);              // fill its hyper-parameters
   state.customTouched = true;
   document.querySelector('input[name=settings-mode][value=manual]').checked = true;
@@ -284,32 +276,6 @@ function buildModelChips() {
     chip.title = m;
     wrap.appendChild(chip);
   });
-}
-
-function presetLabel(name) {
-  const meta = (state.config.preset_meta || {})[name];
-  return (meta && meta.display) || name;
-}
-
-function buildPresetSelect() {
-  const sel = $("preset-select");
-  sel.innerHTML = "";
-  state.config.preset_names.forEach((name) => {
-    const opt = document.createElement("option");
-    opt.value = name; opt.textContent = presetLabel(name);
-    sel.appendChild(opt);
-  });
-}
-
-// Mark the closest preset "suggested" and pre-select it (until the user chooses).
-function applySuggestion(name) {
-  state.suggestedPreset = name || null;
-  const sel = $("preset-select");
-  [...sel.options].forEach((opt) => { opt.textContent = presetLabel(opt.value); });
-  if (!name) return;
-  const opt = [...sel.options].find((o) => o.value === name);
-  if (opt) opt.textContent = presetLabel(name) + " — suggested";
-  if (!state.presetTouched && opt) sel.value = name;
 }
 
 // ---- upload ----
@@ -489,12 +455,6 @@ function onEventColChange() {
   onMappingSelectChange();
 }
 
-function onModeChange() {
-  const mode = document.querySelector('input[name=mode]:checked').value;
-  $("preset-block").classList.toggle("hidden", mode !== "preset");
-  $("custom-block").classList.toggle("hidden", mode !== "custom");
-}
-
 // ---- quantile grid (mirror of grids.py so the count/warning update live) ----
 const Q_STANDARD = [0.1, 0.25, 0.5, 0.75, 0.9];
 const Q_REQUIRED = [0.1, 0.5, 0.9];
@@ -626,7 +586,6 @@ function renderValidation(result) {
   // Drop acks for warnings that no longer apply.
   [...state.acks].forEach((k) => { if (!liveKeys.has(k)) state.acks.delete(k); });
 
-  if (result.suggested_preset) applySuggestion(result.suggested_preset);
   renderSummary(result.summary || {});
   updateGating();
 }
@@ -694,7 +653,6 @@ function updateGating() {
 
 // ---- run ----
 function collectConfig() {
-  const mode = document.querySelector('input[name=mode]:checked').value;
   const kind = $("quantile-grid").value;
   const cfg = {
     csv_path: state.csvPath,
@@ -711,19 +669,15 @@ function collectConfig() {
     n_splits: +$("n-splits").value,
     seed: +$("seed").value,
     deterministic: $("deterministic").checked,
-    mode,
+    mode: "custom",
   };
-  if (mode === "preset") {
-    cfg.preset = $("preset-select").value;
-  } else {
-    cfg.custom = {
-      hidden_dim: +$("c-hidden").value, layers: +$("c-layers").value,
-      dropout: +$("c-dropout").value, grid_size: +$("c-grid").value,
-      learning_rate: +$("c-lr").value, weight_decay: +$("c-wd").value,
-      batch_size: +$("c-batch").value, maximum_epochs: +$("c-epochs").value,
-      patience: +$("c-patience").value,
-    };
-  }
+  cfg.custom = {
+    hidden_dim: +$("c-hidden").value, layers: +$("c-layers").value,
+    dropout: +$("c-dropout").value, grid_size: +$("c-grid").value,
+    learning_rate: +$("c-lr").value, weight_decay: +$("c-wd").value,
+    batch_size: +$("c-batch").value, maximum_epochs: +$("c-epochs").value,
+    patience: +$("c-patience").value,
+  };
   return cfg;
 }
 

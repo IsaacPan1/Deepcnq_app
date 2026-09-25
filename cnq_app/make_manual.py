@@ -151,22 +151,25 @@ def build(path: Path) -> Path:
          "warnings (which you acknowledge), plus a summary (rows used, events, "
          "censoring, duration range).")
     h2("5.3 Settings: Choose settings or Auto-tune")
-    para("Choose settings (default): pick one or more models and their "
-         "hyperparameters. 'Paper preset' reuses values tuned in the paper on a public "
-         "dataset of similar size (the closest is marked 'suggested'); 'Custom' lets "
-         "you set them yourself and is pre-filled from your data's size and covariate "
-         "count.")
-    para("Auto-tune: let the app search several models and settings on your data and "
-         "pick the best.")
+    para("Choose settings (default): pick a model (KAN-CNQ or MLP-CNQ) and its "
+         "hyperparameters. The hyperparameter fields are pre-filled from your data's own "
+         "size and covariate count — a sensible starting point you can edit. There are "
+         "no 'paper presets': values tuned on other datasets are data-specific and don't "
+         "transfer, so the app starts from your data instead. For pure tabular data, KAN "
+         "and MLP are sufficient; transformer models (for text / annotation data) aren't "
+         "offered, since this app ingests only tabular CSVs.")
+    para("Auto-tune: let the app search several settings on your data and pick the best, "
+         "including which of KAN-CNQ / MLP-CNQ to use.")
     steps([
-        "Tick the model families to try — KAN-CNQ and MLP-CNQ by default. Transformers "
-        "are opt-in and help only for nonstandard / cross-modality data.",
+        "Tick the model families to try — KAN-CNQ and MLP-CNQ, both on by default; the "
+        "search picks between them.",
         "Choose a search effort: Quick (~6 trials), Standard (~12), or Thorough (~24, "
         "with repeated splits for steadier picks).",
         "Click 'Find best settings' and watch the progress (best-so-far is shown). You "
         "can cancel; you'll still get the best found so far.",
         "Review the leaderboard (lower validation pinball is better), then click 'Use "
-        "best settings' to fill in the winner. Review and Start training.",
+        "best settings' to fill in the winning model and its hyperparameters. Review and "
+        "Start training.",
     ])
     h2("5.4 Quantile levels")
     para("The default (0.1, 0.25, 0.5, 0.75, 0.9) is a good start. 'Every 10% / 5% / "

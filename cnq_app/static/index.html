@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="/style.css?v=11">
+  <link rel="stylesheet" href="/style.css?v=12">
 </head>
 <body>
 <header class="masthead">
@@ -134,23 +134,12 @@ S002,36.0,0,64,1.2,0</pre>
     </div>
 
     <div id="manual-block">
-      <p class="field-label">Models</p>
+      <p class="field-label">Models <span class="muted">KAN and MLP — sufficient for tabular data</span></p>
       <div id="model-list" class="chips chips-lg"></div>
 
-      <p class="field-label">Hyperparameters</p>
-      <div class="segmented" role="radiogroup">
-        <label><input type="radio" name="mode" value="preset" checked> Paper preset</label>
-        <label><input type="radio" name="mode" value="custom"> Custom</label>
-      </div>
-
-      <div id="preset-block" class="subpanel">
-        <label>Starting settings
-          <select id="preset-select"></select>
-        </label>
-        <p class="muted">Hyperparameters tuned in the paper on a dataset of similar size. Your data is not combined with it.</p>
-      </div>
-
-      <div id="custom-block" class="hidden subpanel grid-custom">
+      <p class="field-label">Hyperparameters
+        <span class="muted">started from your data's size and covariates; edit as needed</span></p>
+      <div id="custom-block" class="subpanel grid-custom">
         <label>Hidden width <input type="number" id="c-hidden" value="64" min="1"></label>
         <label>Layers <input type="number" id="c-layers" value="2" min="1"></label>
         <label>Dropout <input type="number" id="c-dropout" value="0" step="0.05" min="0" max="0.9"></label>
@@ -170,9 +159,7 @@ S002,36.0,0,64,1.2,0</pre>
       <div class="chips" id="tune-families">
         <label class="inline"><input type="checkbox" value="KAN_gaps" checked> KAN-CNQ</label>
         <label class="inline"><input type="checkbox" value="MLP_multiQ_gaps" checked> MLP-CNQ</label>
-        <label class="inline"><input type="checkbox" value="TransformerPS_gaps"> Trans-CNQ</label>
-        <label class="inline"><input type="checkbox" value="Transformer_KAN_gaps"> TransKAN-CNQ</label>
-        <span class="muted">Transformers help only for nonstandard / cross-modality data.</span>
+        <span class="muted">KAN and MLP are sufficient for tabular data; the search picks between them.</span>
       </div>
       <label>Search effort
         <select id="tune-effort">
@@ -511,6 +498,6 @@ S002,36.0,0,64,1.2,0</pre>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js?v=11"></script>
+<script src="/app.js?v=12"></script>
 </body>
 </html>

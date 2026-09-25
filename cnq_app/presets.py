@@ -1,29 +1,30 @@
-"""Resolve model hyper-parameters from the shipped cnq.yaml presets.
+"""Resolve model hyper-parameters and pick data-driven defaults.
 
-The presets file (configs/final/real/cnq.yaml) is JSON with a ``common`` block
-of shared training settings and a ``configs`` block keyed by dataset name, each
-holding per-model overrides. This mirrors the ``common``/``configs`` handling in
-scripts/train.py so the app produces the same architecture/training dicts.
+Hyper-parameters come from the data (``defaults`` / ``auto_space`` + auto-tune),
+not from other datasets. Only the shipped cnq.yaml ``common`` block (generic
+optimizer / scheduler / batch settings) is read; the old per-dataset "paper
+presets" have been removed.
 """
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import paths
 from deepquantreg.config import load_config
 
-# Models the UI exposes: KAN and the non-crossing MLP first (the preferred
-# families), then the attention models, then the plain MLP baseline.
+# Every model name the backend can build/validate (kept broad for tests and for
+# possible future multimodal use). Transformers remain valid here but are not
+# offered in the tabular UI or the tuner.
 APP_MODELS = ("KAN_gaps", "MLP_multiQ_gaps", "TransformerPS_gaps",
               "Transformer_KAN_gaps", "MLP_multiQ")
 TRANSFORMER_MODELS = ("TransformerPS_gaps", "Transformer_KAN_gaps")
 
-# Auto-tune searches KAN + non-crossing MLP by default; transformers are opt-in
-# (useful only for nonstandard / cross-modality data).
-TUNE_DEFAULT_MODELS = ("KAN_gaps", "MLP_multiQ_gaps")
-TUNE_ALLOWED_MODELS = ("KAN_gaps", "MLP_multiQ_gaps", "TransformerPS_gaps",
-                       "Transformer_KAN_gaps", "MLP_multiQ")
+# This app takes pure tabular CSVs, so it only offers (and auto-tunes over) KAN and
+# the non-crossing MLP. Transformers help only for multimodal data (text /
+# annotations), which this app doesn't ingest, so they're excluded here.
+TABULAR_MODELS = ("KAN_gaps", "MLP_multiQ_gaps")
+TUNE_DEFAULT_MODELS = TABULAR_MODELS
+TUNE_ALLOWED_MODELS = TABULAR_MODELS
 
 # Display labels the front end shows (mirror of MODEL_INFO in static/app.js). The
 # API stores/uses the internal names on the left; these let the server map a
@@ -57,21 +58,10 @@ def resolve_model_name(name, allowed) -> "str | None":
     internal = display_to_internal.get(name.lower())
     return internal if internal in allowed else None
 
-# Approximate size / censoring for each paper cohort, used only to label the
-# "Starting settings" options and to suggest the closest one. These are the
-# published figures for the public benchmark datasets; the app never combines
-# the user's data with them.
-PRESET_META = {
-    "support":  {"label": "SUPPORT",  "n": 8873, "censoring": 32},
-    "flchain":  {"label": "FLCHAIN",  "n": 7874, "censoring": 72},
-    "gbsg":     {"label": "GBSG",     "n": 2232, "censoring": 43},
-    "gbsg500":  {"label": "GBSG500",  "n": 500,  "censoring": 56},
-    "metabric": {"label": "METABRIC", "n": 1904, "censoring": 42},
-    "nki70":    {"label": "NKI70",    "n": 144,  "censoring": 67},
-}
-
-# Fallback architecture/training used when a preset has no entry for a model
-# (the shipped presets only cover the three CNQ models, not MLP_multiQ).
+# Generic training defaults (not dataset-specific). The shipped cnq.yaml only
+# supplies the shared ``common`` block (optimizer / scheduler / batch); the old
+# per-dataset "paper presets" have been removed -- hyper-parameters now come from
+# the data (``defaults`` / auto-tune), not from other cohorts.
 _DEFAULT_ARCH = {"hidden_dim": 100, "layers": 2, "dropout": 0.0, "grid_size": 5}
 _DEFAULT_TRAIN = {"learning_rate": 1e-4, "weight_decay": 0.0, "patience": 10}
 NHEAD = 4
@@ -79,77 +69,6 @@ NHEAD = 4
 
 def _load() -> dict[str, Any]:
     return load_config(paths.CNQ_PRESET_CONFIG)
-
-
-def preset_names() -> list[str]:
-    """Dataset preset keys available in cnq.yaml (support, flchain, ...)."""
-    return list(_load().get("configs", {}).keys())
-
-
-def default_quantiles() -> list[float]:
-    common = _load().get("common", {})
-    return [float(q) for q in common.get("quantiles", [0.1, 0.25, 0.5, 0.75, 0.9])]
-
-
-def _approx(n: int) -> int:
-    """Round a subject count to two significant figures for display."""
-    if n <= 0:
-        return 0
-    factor = 10 ** (int(math.floor(math.log10(n))) - 1)
-    return int(round(n / factor) * factor)
-
-
-def preset_label(name: str) -> str:
-    """e.g. 'METABRIC (≈1,900 subjects, 42% censored)'."""
-    meta = PRESET_META.get(name)
-    if not meta:
-        return name
-    return f"{meta['label']} (≈{_approx(meta['n']):,} subjects, {meta['censoring']}% censored)"
-
-
-def preset_meta() -> dict[str, Any]:
-    """Per-preset metadata (label, n, censoring) for the front end."""
-    return {name: {**PRESET_META[name], "display": preset_label(name)}
-            for name in preset_names() if name in PRESET_META}
-
-
-def suggest_preset(n_subjects: int | None, censoring_pct: float | None) -> str | None:
-    """Closest paper cohort: log subject count is the main distance, censoring second."""
-    names = [n for n in preset_names() if n in PRESET_META]
-    if not names or not n_subjects or n_subjects <= 0:
-        return None
-    log_user = math.log(n_subjects)
-
-    def score(name: str) -> float:
-        meta = PRESET_META[name]
-        log_diff = abs(log_user - math.log(meta["n"]))
-        cens_diff = 0.0
-        if censoring_pct is not None:
-            cens_diff = abs(censoring_pct - meta["censoring"]) / 100.0
-        return log_diff + 0.3 * cens_diff  # log dominates; censoring breaks near-ties
-
-    return min(names, key=score)
-
-
-def preset_summary() -> dict[str, Any]:
-    """Everything the front end needs to render the preset picker."""
-    cfg = _load()
-    common = cfg.get("common", {})
-    configs = cfg.get("configs", {})
-    return {
-        "presets": {name: configs[name] for name in configs},
-        "preset_meta": preset_meta(),
-        "common": {
-            "quantiles": [float(q) for q in common.get("quantiles", default_quantiles())],
-            "optimizer": common.get("optimizer", "AdamW"),
-            "scheduler": common.get("scheduler", "CosineAnnealingLR"),
-            "batch_size": int(common.get("batch_size", 64)),
-            "maximum_epochs": int(common.get("maximum_epochs", 500)),
-            "patience": int(common.get("patience", 10)),
-        },
-        "models": list(APP_MODELS),
-        "transformer_models": list(TRANSFORMER_MODELS),
-    }
 
 
 def defaults(n: int, p: int | None = None, censoring: float | None = None) -> dict[str, Any]:

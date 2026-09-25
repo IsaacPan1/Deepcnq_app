@@ -162,19 +162,18 @@ through `build_frame`. `results.json` and the report include a **Data** section
 (file name, rows used/excluded with reasons, events, censoring %, time unit,
 event mapping, features).
 
-## Settings: presets & quantile grids (`presets.py`, `grids.py`)
+## Settings: hyper-parameters & quantile grids (`presets.py`, `grids.py`)
 
-**Starting settings (presets).** `presets.PRESET_META` holds the approximate
-size and censoring of each paper cohort (published figures for the public
-benchmarks; the app never combines user data with them). `preset_label` renders
-`"METABRIC (≈1,900 subjects, 42% censored)"` (subject counts rounded to two
-significant figures), and `preset_meta()` ships these to the front end in
-`/api/config`. `suggest_preset(n_subjects, censoring_pct)` picks the closest
-cohort: the main distance is `|log(n_user) − log(n_preset)|`, with censoring as a
-secondary term (`+ 0.3 · |Δcensoring|/100`) so it only breaks near-ties. The
-suggestion is computed from the validation summary and returned as
-`suggested_preset` on `/api/upload` and `/api/validate`; the UI marks that option
-"suggested" and pre-selects it until the user changes it.
+**Data-driven hyper-parameters.** There are no per-dataset "paper presets" —
+hyper-parameters tuned on other cohorts are data-specific and don't transfer.
+`presets.defaults(n, p, censoring)` derives sensible starting values from the
+user's own sample size and covariate count (see the Auto-tune section below);
+they're returned as `suggested_custom` on `/api/validate` and pre-fill the
+settings fields. `presets.resolve` reads only the generic `common` block from the
+shipped `cnq.yaml` (optimizer / scheduler / batch); the per-dataset config
+entries are no longer consulted. The tabular UI offers only `TABULAR_MODELS`
+(`KAN_gaps`, `MLP_multiQ_gaps`); `APP_MODELS` stays broad so the backend can still
+build/validate transformer models for tests or future multimodal use.
 
 **Quantile grids.** `grids.py` is the single source of truth. `build_grid(kind,
 custom)` supports `standard`, `every10`, `every5`, `every1` and `custom`,
@@ -356,12 +355,13 @@ within a run — and correctly uses internal names, mapping display labels back 
 
 `presets.defaults(n, p, censoring)` gives data-driven default hyper-parameters
 (smaller/regularised for small data, wider/deeper for large; values divisible by
-`nhead`). It pre-fills the Custom fields (surfaced as `suggested_custom` on
+`nhead`). It pre-fills the settings fields (surfaced as `suggested_custom` on
 `/api/validate`) and centres the search space `presets.auto_space(n, p,
 enabled_models)`.
 
-`autotune.run_search(...)` is a **random search** over KAN + non-crossing MLP by
-default (transformers opt-in via `TUNE_ALLOWED_MODELS`), bounded by a trial count
+`autotune.run_search(...)` is a **random search** over the tabular models — KAN +
+non-crossing MLP (`TUNE_ALLOWED_MODELS == TABULAR_MODELS`; transformers are
+excluded because this app ingests only tabular data), bounded by a trial count
 (and optional wall-clock). Each trial trains 1 split (Thorough averages 2–3) with a
 **reduced** epoch budget (`SEARCH_EPOCHS`) and is ranked by **validation** IPCW
 pinball (`TrainOutput.valid_pinball`, from `fit`'s `best_valid_trainG_pinball_mean`
@@ -546,7 +546,7 @@ cd deepcnq && git pull
 | `project_report.py` | projection curve plot, HTML report and results zip |
 | `autotune.py` | bounded model/hyper-parameter random search, ranked by validation pinball |
 | `validation.py` | data-spec checks (errors/warnings/summary) used by upload, validate and run |
-| `presets.py` | resolve hyper-parameters from `cnq.yaml`; preset labels + closest-cohort suggestion |
+| `presets.py` | data-driven default hyper-parameters + auto-tune space; tabular model list |
 | `grids.py` | quantile-grid generation (kinds, rounding, required levels, standard subset) |
 | `plots.py` | the seven matplotlib figures |
 | `report.py` | self-contained HTML report + results zip |
@@ -561,7 +561,7 @@ cd deepcnq && git pull
 | `requirements.txt` | the app's own runtime dependencies (torch installed by `run.py`) |
 | `tests/test_smoke.py` | end-to-end + API + quantile-validation + cancellation tests |
 | `tests/test_validation.py` | per-rule data-validation tests + a messy-CSV API flow |
-| `tests/test_grids.py` | quantile-grid generation, preset suggestion, and a 5%-grid smoke run |
+| `tests/test_grids.py` | quantile-grid generation, data-driven defaults, and a 5%-grid smoke run |
 | `tests/test_model_io.py` | bundle round-trip + corruption/incompatibility handling |
 | `tests/test_predict.py` | save→reload→predict parity, column-order/scaling invariance, ensembles, errors, external validation |
 | `tests/test_api_save_predict.py` | HTTP payload-level save (all bundle types, display name, 400s) + predict |

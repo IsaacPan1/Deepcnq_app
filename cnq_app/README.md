@@ -106,22 +106,24 @@ results — the app checks this and warns you before training.
 
 ## Settings
 
-**Choose settings** (default): pick a model and its hyperparameters. **Starting
-settings** reuse the values the paper tuned on a public dataset of similar size —
-SUPPORT, FLCHAIN, GBSG, GBSG500, METABRIC or NKI70; after you upload, the closest
-one is marked **suggested** (your data is never combined with those datasets).
-Choose **Custom** to set values yourself — these are **pre-filled from your data's
-size and covariate count**, so they're a sensible starting point you can edit.
+**Choose settings** (default): pick a model (**KAN-CNQ** or **MLP-CNQ**) and its
+hyperparameters. The hyperparameter fields are **pre-filled from your data's own
+size and covariate count** after you upload — a sensible starting point you can
+edit. There are no "paper presets": hyperparameters tuned on other datasets are
+data-specific and don't transfer, so the app starts from your data instead.
 
-**Auto-tune** (alternative): let the app search several models and settings on
-*your* data and pick the best. Tick the **model families** to try — **KAN-CNQ and
-MLP-CNQ** by default (transformers are opt-in, only for nonstandard /
-cross-modality data) — choose a **search effort** (Quick / Standard / Thorough),
-and click **Find best settings**. Each candidate is scored by validation IPCW
-pinball (with a reduced training budget); you get a **leaderboard**, and **Use
-best settings** fills in the winner so you can review and **Start training**
-normally. The search is bounded and cancellable — cancelling still shows the best
-found so far.
+For pure tabular data, KAN and MLP are sufficient; transformer models help only
+for nonstandard / cross-modality data (text, annotations), which this app doesn't
+ingest, so they aren't offered here.
+
+**Auto-tune** (alternative): let the app search several settings on *your* data
+and pick the best — including **which of KAN-CNQ / MLP-CNQ** to use. Tick the
+**model families** to try (both by default), choose a **search effort** (Quick /
+Standard / Thorough), and click **Find best settings**. Each candidate is scored
+by validation IPCW pinball (with a reduced training budget); you get a
+**leaderboard**, and **Use best settings** fills in the winning model and its
+hyperparameters so you can review and **Start training** normally. The search is
+bounded and cancellable — cancelling still shows the best found so far.
 
 **Quantile levels** are the points on each subject's survival-time distribution
 the model predicts. The default (0.1, 0.25, 0.5, 0.75, 0.9) is a good start;
