@@ -47,7 +47,9 @@ browser** — no terminal needed. It all uses **simulated** demo data.
 4. Try **500 with outcomes** (coverage close to nominal) and then **500 shifted
    population** (calibration gets worse) to see why you validate on your own data.
 
-A full presenter walkthrough is in [DEMO.md](DEMO.md).
+A full presenter walkthrough is in [DEMO.md](DEMO.md), and a complete user manual
+(train, auto-tune, save, predict, project — with a glossary and troubleshooting)
+is in **[MANUAL.docx](MANUAL.docx)**.
 
 ## Open it again later
 

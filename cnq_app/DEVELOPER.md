@@ -492,6 +492,14 @@ order, that a single row matches the same row inside a batch, that ensembles sta
 non-crossing, that missing-feature / text-in-feature mappings error, and that
 external validation runs.
 
+## Documentation
+
+End-user docs: `README.md` (quick start + demo), `DEMO.md` (presenter script) and
+`MANUAL.docx` (the full manual). `MANUAL.docx` is generated from `make_manual.py`
+with **python-docx** — a docs-only dependency (not in `requirements.txt`); install
+it with `pip install python-docx`, then `python make_manual.py`. The built
+`MANUAL.docx` is committed for convenience and shipped in releases.
+
 ## Building a release
 
 ```bash
@@ -546,6 +554,7 @@ cd deepcnq && git pull
 | `make_release.py` | build the self-contained `deepquant.zip` |
 | `demo.py` | on-demand demo data (torch-free) + model build; server calls these |
 | `make_demo.py` | developer CLI: write committable `demo/*.csv` + `demo_model.cnqmodel` |
+| `make_manual.py` | generate the end-user `MANUAL.docx` (needs `pip install python-docx`) |
 | `static/` | front end (HTML/CSS/JS) |
 | `sample_data/` | bundled simulated dataset + its generator |
 | `demo/` | committed simulated demo data + model (optional; app regenerates data) |
