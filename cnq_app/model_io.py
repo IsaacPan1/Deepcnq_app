@@ -335,6 +335,7 @@ def summarize(meta: dict) -> dict:
         "quantiles": list(meta.get("quantiles") or []),
         "time_unit": meta.get("time_unit"),
         "deepcnq": (meta.get("deepcnq") or {}).get("version_str"),
+        "has_population": bool((meta.get("training_survival") or {}).get("time")),
     }
 
 

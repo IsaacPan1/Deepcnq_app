@@ -298,6 +298,9 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/predictions":
                 return self._handle_download(query, "predictions.csv", "text/csv",
                                              "cnq_predictions.csv")
+            if route == "/api/projection":
+                return self._handle_download(query, "projection.csv", "text/csv",
+                                             "cnq_projection.csv")
             if route == "/api/demo/train":
                 import demo
                 return self._send_bytes(demo.resolve_csv("train").read_bytes(), "text/csv",
@@ -344,6 +347,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_predict_run()
             if route == "/api/demo/build":
                 return self._handle_demo_build()
+            if route == "/api/project/run":
+                return self._handle_project_run()
             return self._error("not found", 404)
         except Exception as exc:  # noqa: BLE001
             return self._error(f"{type(exc).__name__}: {exc}", 500)
@@ -751,6 +756,45 @@ class Handler(SimpleHTTPRequestHandler):
         if manager.active() is not None:
             return self._error("a job is already running", 409)
         job = manager.start({"kind": "predict", **cfg})
+        self._send_json({"job_id": job.id, **job.status()})
+
+    def _handle_project_run(self):
+        if not self._repo_ready():
+            return
+        import model_io
+        cfg = json.loads(self._read_body() or b"{}")
+        try:
+            path = self._resolve_model(cfg.get("model_id"))
+        except (ValueError, LookupError) as exc:
+            return self._error(str(exc))
+        meta = model_io.read_meta(path)
+        mode = cfg.get("mode")
+        if mode == "population":
+            if not (meta.get("training_survival") or {}).get("time"):
+                return self._error("this model doesn't support population projection; re-save it")
+            try:
+                n = float(cfg.get("n"))
+            except (TypeError, ValueError):
+                return self._error("enter a sample size N")
+            if n <= 0:
+                return self._error("sample size N must be positive")
+        elif mode == "cohort":
+            if not cfg.get("csv_path") or not Path(cfg["csv_path"]).exists():
+                return self._error("upload a cohort CSV first")
+            import pandas as pd
+            import predict as predict_mod
+            vres = predict_mod.validate(meta, pd.read_csv(cfg["csv_path"]),
+                                        cfg.get("feature_map"), id_col=cfg.get("id_col"))
+            blocking = [e for e in vres["errors"]
+                        if e["code"] in ("missing_features", "duplicate_mapping", "feature_not_numeric")]
+            if blocking:
+                return self._error(blocking[0]["message"])
+        else:
+            return self._error("choose population or cohort mode")
+        manager = _get_manager()
+        if manager.active() is not None:
+            return self._error("a job is already running", 409)
+        job = manager.start({"kind": "project", **cfg})
         self._send_json({"job_id": job.id, **job.status()})
 
 

@@ -341,6 +341,8 @@ label as an id is rejected with a clear 400.
 | `POST /api/predict/validate` | `{model_id, csv_path, feature_map, …}` → validation (resolves the model first) |
 | `POST /api/predict/run` | start a `predict` job; a bad/unbuilt model or mapping is a **400** |
 | `GET /api/predictions?id=` | download a predict job's `predictions.csv` |
+| `POST /api/project/run` | start a `project` job `{model_id, mode, n?/csv_path?+feature_map?, time_points?, target_events?}` |
+| `GET /api/projection?id=` | download a project job's `projection.csv` |
 
 The model resolves (torch-free) **before** the mapping is validated, so an
 unbuilt demo or a stale saved id returns a fast 400 rather than a job that fails
@@ -348,6 +350,34 @@ immediately. Predict jobs reuse the existing `/api/report` and `/api/zip` routes
 (The `/api/save` `model` field is a different axis — the trained architecture name
 within a run — and correctly uses internal names, mapping display labels back via
 `presets.resolve_model_name`.)
+
+### Population / cohort projection (`project.py`, `project_report.py`)
+
+The **Project** tab turns per-subject predictions into an aggregate
+cumulative-events curve and answers two questions: events by a time (direction A)
+and time for a target number of events (direction B).
+
+- **Population (from N)** — `project.population_projection(meta, N)` scales the
+  training Kaplan–Meier curve stored in the bundle (`meta.training_survival`, added
+  by `save_model` at save time via `pipeline.km_survival_curve`, which now also
+  returns Greenwood `var`, the `horizon` and `last_is_censored`). `D(t) = N·(1 −
+  S_KM(t))`; the band is `N · Greenwood CI`. Torch-free.
+- **Cohort (from covariates)** — `project.cohort_projection(pred_log, quantiles,
+  horizon)` aggregates the model's per-subject `S_i(t)`: `D(t) = Σ(1 − S_i(t))`,
+  band = Poisson-binomial `Σ F_i(1−F_i)`. Fed by `predict.run_prediction`.
+- **Queries** — `events_at_times` (A) and `time_for_events` (B, monotone
+  inversion). Both are **range-guarded** at the follow-up `horizon`: a time beyond
+  it, or a target exceeding `max_events` within follow-up, is flagged out-of-range
+  (v1 does not extrapolate the censored tail — that would need a parametric
+  dropout/enrollment model).
+
+Projection runs as a job (`kind: "project"` → `JobManager._execute_project`);
+`project_report.build` writes `report.html`, `results.zip`, `projection.csv` and
+`results.json`. `POST /api/project/run` `{model_id, mode, n?|csv_path?+feature_map?,
+time_points?, target_events?}` resolves the model by id and returns a **400**
+before any job for an unbuilt/unsupported model or a bad mapping. Bundles saved
+before this feature lack `training_survival`, so population mode is disabled for
+them (`summarize` reports `has_population`); re-save to enable.
 
 ### Job folder cleanup (`CNQ_KEEP_RUNS`)
 
@@ -478,6 +508,8 @@ cd deepcnq && git pull
 | `save_model.py` | assemble bundles from a run; refit-on-all-data for final models |
 | `predict.py` | prediction: validation, per-member scaling, ensemble averaging, external validation |
 | `predict_report.py` | prediction plots, HTML report and results zip |
+| `project.py` | population/cohort cumulative-event projection + A/B queries (torch-free math) |
+| `project_report.py` | projection curve plot, HTML report and results zip |
 | `validation.py` | data-spec checks (errors/warnings/summary) used by upload, validate and run |
 | `presets.py` | resolve hyper-parameters from `cnq.yaml`; preset labels + closest-cohort suggestion |
 | `grids.py` | quantile-grid generation (kinds, rounding, required levels, standard subset) |
@@ -498,3 +530,4 @@ cd deepcnq && git pull
 | `tests/test_predict.py` | save→reload→predict parity, column-order/scaling invariance, ensembles, errors, external validation |
 | `tests/test_api_save_predict.py` | HTTP payload-level save (all bundle types, display name, 400s) + predict |
 | `tests/test_demo.py` | demo generation, committed bundle predict/flags, delete protection |
+| `tests/test_project.py` | projection math (population/cohort, A/B queries, range guard) |

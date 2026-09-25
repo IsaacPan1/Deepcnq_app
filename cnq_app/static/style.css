@@ -203,6 +203,9 @@ a:hover { color: var(--primary-hover); }
 #p-step-map .num     { --c: var(--q50); }
 #p-step-run .num     { --c: var(--q75); color: #1f3312; }
 #p-step-results .num { --c: var(--q90); color: #3d2a00; }
+#pr-step-inputs .num  { --c: var(--q25); }
+#pr-step-query .num   { --c: var(--q50); }
+#pr-step-results .num { --c: var(--q90); color: #3d2a00; }
 
 /* Thread connecting the step markers */
 .card.step:has(+ .card.step:not(.hidden))::before {
@@ -464,7 +467,7 @@ tr:nth-child(even) td { background: var(--surface-2); }
 
 /* ---------- Results ---------- */
 .downloads { display: flex; flex-wrap: wrap; gap: .6rem; margin-bottom: 1rem; }
-iframe#report-frame, iframe#p-report-frame {
+iframe#report-frame, iframe#p-report-frame, iframe#pr-report-frame {
   display: block;
   width: 100%;
   height: 820px;
@@ -474,7 +477,7 @@ iframe#report-frame, iframe#p-report-frame {
 }
 
 /* Progress bars for the predict + save widgets share the training bar's look */
-#p-bar-fill, #save-bar-fill, #p-demo-rebuild-fill {
+#p-bar-fill, #save-bar-fill, #p-demo-rebuild-fill, #pr-bar-fill {
   height: 100%;
   width: 0;
   border-radius: inherit;

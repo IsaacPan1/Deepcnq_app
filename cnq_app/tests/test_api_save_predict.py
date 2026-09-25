@@ -326,6 +326,50 @@ def test_template_download_and_roundtrip(trained_server):
     assert v["errors"] == [] and v["summary"]["n_matched"] == len(FEATURES)
 
 
+def test_project_population_by_id(trained_server):
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id)   # saved bundles now carry the training KM curve
+    st, body = _http(f"{base}/api/models")
+    entry = next(m for m in json.loads(body)["models"] if m["id"] == name)
+    assert entry.get("has_population") is True
+
+    st, body = _post(base, "/api/project/run",
+                     {"model_id": name, "mode": "population", "n": 250,
+                      "time_points": [], "target_events": None})
+    assert st == 200, body
+    pid = json.loads(body)["job_id"]
+    assert _poll(base, pid)["state"] == "done"
+    st, res = _http(f"{base}/api/results?id={pid}")
+    r = json.loads(res)
+    assert r["source"] == "population" and r["n"] == 250.0
+    assert len(r["curve"]["time"]) > 0 and r["max_events"] <= 250.0 + 1e-6
+    st, csv = _http(f"{base}/api/projection?id={pid}")
+    assert st == 200 and b"time,events" in csv
+
+
+def test_project_cohort_by_id(trained_server):
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id)
+    csv_path = _upload_csv(base, pd.read_csv(paths.SAMPLE_DATA))
+    body = {"model_id": name, "mode": "cohort", "csv_path": csv_path,
+            "feature_map": {f: f for f in FEATURES}, "id_col": None,
+            "time_points": [], "target_events": None}
+    st, out = _post(base, "/api/project/run", body)
+    assert st == 200, out
+    pid = json.loads(out)["job_id"]
+    assert _poll(base, pid)["state"] == "done"
+    st, res = _http(f"{base}/api/results?id={pid}")
+    r = json.loads(res)
+    assert r["source"] == "cohort" and len(r["curve"]["events"]) > 0
+
+
+def test_project_population_needs_N(trained_server):
+    base, run_id, _ = trained_server
+    name = _ensure_saved(base, run_id)
+    st, body = _post(base, "/api/project/run", {"model_id": name, "mode": "population"})
+    assert st == 400
+
+
 def test_run_payload_matches_api(trained_server):
     # Guard against UI-vs-API mismatch: app.js sends the id and the mapping, and
     # the server accepts exactly that shape.

@@ -190,3 +190,37 @@ The predictions CSV has, per subject: each quantile `q_<τ>`, the `median`, the
   on subjects the model was **not** trained on. They are computed with a
   censoring estimate from the *new* data and are labelled as external validation
   in the report — never mix in rows the model already saw.
+
+## Project population trends
+
+The **Project trends** tab answers aggregate questions instead of per-subject
+ones:
+
+- **How many events by a time?** enter one or more time points → expected
+  cumulative events (with a confidence band).
+- **How long until a target?** enter a number of events → the time by which they
+  are expected.
+
+Pick a model, then choose:
+
+- **Population size N** *(main result)* — scales the model's training-population
+  survival curve (Kaplan–Meier) to N subjects. No cohort upload needed.
+- **Upload a cohort** — uses the model to project *these* subjects' covariates
+  (same column-mapping table as Predict). Useful when your cohort's mix differs
+  from the training population.
+
+You get a cumulative-events-over-time chart with a band, answers to your
+questions, and downloads (projection CSV, report, zip).
+
+**What to keep in mind:**
+
+- The band is **aggregate outcome/sampling uncertainty** (Greenwood for the
+  population curve, a Poisson-binomial count for a cohort) — *not* the model's own
+  uncertainty about its parameters.
+- Projection is only shown **up to the observed follow-up** (the last event time
+  in the training data). A time — or a target number of events — beyond that is
+  flagged and not projected; extrapolating the censored tail would need a
+  parametric dropout/enrollment model (not in this version). Using a **dense
+  quantile grid** (Every 5% / 1%) when you train gives a smoother, further-reaching
+  curve.
+- Population projection assumes the N subjects resemble the training population.

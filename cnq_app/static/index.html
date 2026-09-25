@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="/style.css?v=9">
+  <link rel="stylesheet" href="/style.css?v=10">
 </head>
 <body>
 <header class="masthead">
@@ -36,6 +36,7 @@
 <nav class="tabs" role="tablist" aria-label="Mode">
   <button class="tab on" id="tab-train" role="tab" aria-selected="true">Train a model</button>
   <button class="tab" id="tab-predict" role="tab" aria-selected="false">Predict new subjects</button>
+  <button class="tab" id="tab-project" role="tab" aria-selected="false">Project trends</button>
 </nav>
 
 <main>
@@ -384,10 +385,89 @@ S002,36.0,0,64,1.2,0</pre>
     <iframe id="p-report-frame" title="Prediction report"></iframe>
   </section>
 </div><!-- /predict-view -->
+
+<div class="steps view hidden" id="project-view">
+  <!-- PR1: model -->
+  <section class="card step" id="pr-step-model">
+    <h2><span class="num">1</span> Choose a model</h2>
+    <div class="row">
+      <label>Model <select id="pr-model-select"></select></label>
+      <div class="save-action">
+        <button type="button" id="pr-refresh-models" class="linklike">Refresh list</button>
+      </div>
+    </div>
+    <div id="pr-model-summary" class="model-summary hidden"></div>
+    <p id="pr-model-note" class="status"></p>
+  </section>
+
+  <!-- PR2: cohort -->
+  <section class="card step hidden" id="pr-step-inputs">
+    <h2><span class="num">2</span> Who to project</h2>
+    <div class="segmented" role="radiogroup">
+      <label><input type="radio" name="pr-mode" value="population" checked> Population size N</label>
+      <label><input type="radio" name="pr-mode" value="cohort"> Upload a cohort</label>
+    </div>
+    <div id="pr-population-block" class="subpanel">
+      <label>Number of subjects (N) <input type="number" id="pr-n" value="100" min="1"></label>
+      <p class="muted">Scales the training population's event trend (Kaplan–Meier) to N subjects.</p>
+    </div>
+    <div id="pr-cohort-block" class="subpanel hidden">
+      <label class="dropzone" for="pr-file-input">
+        <input type="file" id="pr-file-input" accept=".csv,text/csv">
+        <span class="dz-title">Choose a cohort CSV</span>
+        <span class="dz-hint">or drag it here</span>
+      </label>
+      <p id="pr-upload-status" class="status"></p>
+      <div class="row">
+        <label>Subject ID column <span class="muted">optional</span><select id="pr-id-col"></select></label>
+      </div>
+      <p class="field-label">Feature columns <span class="muted" id="pr-map-status"></span></p>
+      <div class="map-actions">
+        <a id="pr-template-link" class="btn btn-outline hidden" download>Download template for this model</a>
+        <button type="button" id="pr-match-position" class="btn btn-outline" disabled>Match by position</button>
+      </div>
+      <div class="table-scroll map-scroll"><table id="pr-feature-map" class="map-table"></table></div>
+    </div>
+  </section>
+
+  <!-- PR3: query + run -->
+  <section class="card step hidden" id="pr-step-query">
+    <h2><span class="num">3</span> Project</h2>
+    <div class="row">
+      <label>Events by these times <span class="muted">comma-separated</span>
+        <input type="text" id="pr-time-points" placeholder="e.g. 12, 24, 36"></label>
+      <label>Time for a target <span class="muted">number of events</span>
+        <input type="number" id="pr-target-events" min="1" placeholder="e.g. 50"></label>
+    </div>
+    <div class="actions">
+      <button id="pr-run-btn" class="primary">Project</button>
+      <button id="pr-cancel-btn" class="ghost-danger hidden">Cancel</button>
+    </div>
+    <p id="pr-run-error" class="error" role="status"></p>
+    <div id="pr-progress-wrap" class="progress hidden" aria-live="polite">
+      <div class="progress-head"><span class="spinner" aria-hidden="true"></span>
+        <span id="pr-progress-step">Starting</span></div>
+      <div class="bar"><div id="pr-bar-fill"></div></div>
+      <div id="pr-progress-detail" class="progress-detail"></div>
+    </div>
+  </section>
+
+  <!-- PR4: results -->
+  <section class="card step hidden" id="pr-step-results">
+    <h2><span class="num">4</span> Projected trend</h2>
+    <p id="pr-result-summary" class="v-summary"></p>
+    <div class="downloads">
+      <a id="pr-dl-csv" class="btn">Download projection (.csv)</a>
+      <a id="pr-dl-report" class="btn btn-outline" target="_blank">Open report in new tab</a>
+      <a id="pr-dl-zip" class="btn btn-outline">Download all (.zip)</a>
+    </div>
+    <iframe id="pr-report-frame" title="Projection report"></iframe>
+  </section>
+</div><!-- /project-view -->
 </main>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js?v=9"></script>
+<script src="/app.js?v=10"></script>
 </body>
 </html>

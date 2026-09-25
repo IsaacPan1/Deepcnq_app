@@ -242,27 +242,41 @@ def permutation_importance(model, prepared: PreparedData, quantiles, *, n_repeat
 
 
 def km_survival_curve(time, event) -> dict:
-    """Standard Kaplan--Meier estimate of the outcome survival function S(t)."""
+    """Standard Kaplan--Meier estimate of the outcome survival function S(t).
+
+    Also returns the Greenwood variance of S(t) (``var``), the last observed
+    event time (``horizon`` -- the furthest the estimate is supported) and whether
+    follow-up extends past it via censoring (``last_is_censored``). Population
+    projection uses these for the trend, its confidence band and the range guard.
+    """
     time = np.asarray(time, float)
     event = np.asarray(event, int)
     order = np.argsort(time)
     time, event = time[order], event[order]
     uniq = np.unique(time)
-    surv, values, at_risk_out, n_events_out = 1.0, [], [], []
+    surv, gvar = 1.0, 0.0                      # gvar = cumulative Greenwood sum
+    values, var_out = [], []
+    last_event_time = 0.0
     n = len(time)
     for t in uniq:
-        at_risk = np.sum(time >= t)
-        d = np.sum((time == t) & (event == 1))
-        if at_risk > 0:
+        at_risk = int(np.sum(time >= t))
+        d = int(np.sum((time == t) & (event == 1)))
+        if at_risk > 0 and d > 0:
             surv *= 1.0 - d / at_risk
+            if at_risk - d > 0:
+                gvar += d / (at_risk * (at_risk - d))
+            last_event_time = float(t)
         values.append(surv)
-        at_risk_out.append(int(at_risk))
-        n_events_out.append(int(d))
+        var_out.append(surv * surv * gvar)     # Var(S(t)) = S(t)^2 * sum d/(n(n-d))
+    last_time = float(uniq[-1]) if len(uniq) else 0.0
     return {
         "time": [0.0, *[float(t) for t in uniq]],
         "survival": [1.0, *[float(v) for v in values]],
+        "var": [0.0, *[float(v) for v in var_out]],
         "n": int(n),
         "n_events": int(event.sum()),
+        "horizon": last_event_time,
+        "last_is_censored": bool(last_time > last_event_time),
     }
 
 

@@ -39,6 +39,14 @@ const state = {
   predictLastValidation: null,
   predictJobId: null,
   vpTimer: null,         // predict-validation debounce
+  // project tab
+  projModelId: null,
+  projSummary: null,
+  projColumns: [],
+  projMap: {},
+  projSuggestions: {},
+  projCsvPath: null,
+  projJobId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -135,6 +143,7 @@ async function init() {
   });
   initTabs();
   initPredict();
+  initProject();
   if (!health.ok) return;  // the rest (config, model/preset chips, run) needs the stack
   state.config = await api("/api/config");
   buildModelChips();
@@ -692,20 +701,21 @@ function revealFrom(id) { $(id).classList.remove("hidden"); }
 // ===========================================================================
 // Tabs
 // ===========================================================================
+const TABS = { train: "train-view", predict: "predict-view", project: "project-view" };
+
 function initTabs() {
-  $("tab-train").addEventListener("click", () => showTab("train"));
-  $("tab-predict").addEventListener("click", () => showTab("predict"));
+  Object.keys(TABS).forEach((k) =>
+    $("tab-" + k).addEventListener("click", () => showTab(k)));
 }
 
 function showTab(which) {
-  const train = which === "train";
-  $("train-view").classList.toggle("hidden", !train);
-  $("predict-view").classList.toggle("hidden", train);
-  $("tab-train").classList.toggle("on", train);
-  $("tab-predict").classList.toggle("on", !train);
-  $("tab-train").setAttribute("aria-selected", String(train));
-  $("tab-predict").setAttribute("aria-selected", String(!train));
-  if (!train) loadSavedModels();  // keep the saved-model list fresh when opening Predict
+  Object.entries(TABS).forEach(([k, viewId]) => {
+    $(viewId).classList.toggle("hidden", k !== which);
+    const tab = $("tab-" + k);
+    tab.classList.toggle("on", k === which);
+    tab.setAttribute("aria-selected", String(k === which));
+  });
+  if (which === "predict" || which === "project") loadSavedModels();  // keep model lists fresh
 }
 
 // ===========================================================================
@@ -872,12 +882,18 @@ async function loadSavedModels() {
     const res = await api("/api/models");
     state.predictModels = res.models || [];
   } catch { state.predictModels = []; }
-  const sel = $("p-model-select");
+  populateModelSelect($("p-model-select"));
+  populateModelSelect($("pr-model-select"));
+}
+
+// Fill a model <select>: option VALUE is the stable id, text is the label.
+function populateModelSelect(sel) {
+  if (!sel) return;
   const previous = sel.value;
   sel.innerHTML = "";
   const usable = state.predictModels.filter((m) => !m.error);
   sel.appendChild(new Option(usable.length ? "— choose a model —" : "— no models yet —", ""));
-  usable.forEach((m) => {                       // option VALUE is the id, text is the label
+  usable.forEach((m) => {
     const label = m.is_demo
       ? m.label + (m.needs_build ? " (not built yet)" : "")
       : `${m.label} — ${m.model || ""} (${m.bundle_type || ""})`;
@@ -976,9 +992,7 @@ async function onPredictModelUpload(ev) {
   }
 }
 
-function renderModelSummary(m) {
-  const box = $("p-model-summary");
-  if (!m) { box.classList.add("hidden"); return; }
+function summaryHtml(m) {
   const rows = [
     ["Model", m.model],
     ["What it is", (m.bundle_type || "") + (m.n_members ? ` (${m.n_members} member${m.n_members === 1 ? "" : "s"})` : "")],
@@ -990,18 +1004,27 @@ function renderModelSummary(m) {
     ["deepcnq", m.deepcnq || "—"],
   ];
   const badge = m.is_demo ? `<span class="badge badge-demo">demo · simulated data</span>` : "";
-  box.innerHTML = badge + "<table>" + rows.map(([l, v]) =>
+  return badge + "<table>" + rows.map(([l, v]) =>
     `<tr><td class="lbl">${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("") + "</table>";
-  // Template button in the summary card — the endpoint resolves any model id.
+}
+
+function attachTemplateButton(box, modelId) {
   const act = document.createElement("p");
   act.className = "map-actions";
   const a = document.createElement("a");
   a.className = "btn btn-outline";
   a.textContent = "Download template for this model";
-  a.href = templateUrl();
+  a.href = templateUrl(modelId);
   a.setAttribute("download", "");
   act.appendChild(a);
   box.appendChild(act);
+}
+
+function renderModelSummary(m) {
+  const box = $("p-model-summary");
+  if (!m) { box.classList.add("hidden"); return; }
+  box.innerHTML = summaryHtml(m);
+  attachTemplateButton(box, state.predictModelId);
   box.classList.remove("hidden");
 }
 
@@ -1245,15 +1268,15 @@ function candidateColumns() {
   return cols.filter((c) => !excluded.has(c));
 }
 
-function templateUrl() {
-  return "/api/models/" + encodeURIComponent(state.predictModelId || "") + "/template.csv";
+function templateUrl(modelId) {
+  return "/api/models/" + encodeURIComponent(modelId || "") + "/template.csv";
 }
 
 function updateTemplateAndPosition() {
   const features = (state.predictSummary || {}).features || [];
   const link = $("p-template-link");
   link.classList.toggle("hidden", !state.predictModelId);
-  link.href = templateUrl();
+  link.href = templateUrl(state.predictModelId);
   // Position matching needs at least as many candidate columns as features.
   $("p-match-position").disabled = !(features.length && candidateColumns().length >= features.length);
 }
@@ -1438,6 +1461,295 @@ async function showPredictResults() {
   $("p-report-frame").src = "/api/report?id=" + state.predictJobId;
   $("p-step-results").classList.remove("hidden");
   $("p-step-results").scrollIntoView({ behavior: "smooth" });
+}
+
+// ===========================================================================
+// Project tab (population / cohort cumulative-event projection)
+// ===========================================================================
+function initProject() {
+  $("pr-refresh-models").addEventListener("click", loadSavedModels);
+  $("pr-model-select").addEventListener("change", onProjModelSelect);
+  document.querySelectorAll('input[name=pr-mode]').forEach((r) =>
+    r.addEventListener("change", onProjModeChange));
+  $("pr-file-input").addEventListener("change", onProjDataUpload);
+  $("pr-id-col").addEventListener("change", projUpdateTemplateAndPosition);
+  $("pr-match-position").addEventListener("click", onProjMatchPosition);
+  $("pr-run-btn").addEventListener("click", onProjRun);
+  $("pr-cancel-btn").addEventListener("click", onProjCancel);
+}
+
+function onProjModelSelect() {
+  const id = $("pr-model-select").value;
+  const note = $("pr-model-note");
+  note.classList.remove("is-error");
+  if (!id) {
+    state.projModelId = null;
+    $("pr-model-summary").classList.add("hidden");
+    $("pr-step-inputs").classList.add("hidden");
+    $("pr-step-query").classList.add("hidden");
+    return;
+  }
+  const m = state.predictModels.find((x) => x.id === id);
+  state.projModelId = id;
+  state.projSummary = m;
+  state.projMap = {};
+  state.projSuggestions = {};
+  renderProjSummary(m);
+  if (m.needs_build || m.needs_rebuild) {
+    note.classList.add("is-error");
+    note.textContent = "This model isn't built yet — build it in the Predict tab first.";
+    $("pr-step-inputs").classList.add("hidden");
+    $("pr-step-query").classList.add("hidden");
+    return;
+  }
+  const popRadio = document.querySelector('input[name=pr-mode][value=population]');
+  if (!m.has_population) {
+    popRadio.disabled = true;
+    document.querySelector('input[name=pr-mode][value=cohort]').checked = true;
+    note.textContent = "This model has no stored training curve; population mode needs it "
+      + "re-saved. Using cohort mode.";
+  } else {
+    popRadio.disabled = false;
+    note.textContent = "";
+  }
+  onProjModeChange();
+  $("pr-step-inputs").classList.remove("hidden");
+  $("pr-step-query").classList.remove("hidden");
+}
+
+function renderProjSummary(m) {
+  const box = $("pr-model-summary");
+  if (!m) { box.classList.add("hidden"); return; }
+  box.innerHTML = summaryHtml(m);
+  attachTemplateButton(box, state.projModelId);
+  box.classList.remove("hidden");
+}
+
+function onProjModeChange() {
+  const mode = document.querySelector('input[name=pr-mode]:checked').value;
+  $("pr-population-block").classList.toggle("hidden", mode !== "population");
+  $("pr-cohort-block").classList.toggle("hidden", mode !== "cohort");
+}
+
+async function onProjDataUpload(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const status = $("pr-upload-status");
+  const dz = $("pr-file-input").closest(".dropzone");
+  status.classList.remove("is-error");
+  if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
+  status.textContent = `Uploading ${file.name}…`;
+  try {
+    const buf = await file.arrayBuffer();
+    const info = await api("/api/predict/upload-data", {
+      method: "POST", headers: { "Content-Type": "text/csv", "X-Filename": file.name }, body: buf,
+    });
+    state.projCsvPath = info.csv_path;
+    state.projColumns = info.columns;
+    state.projMap = {};
+    state.projSuggestions = {};
+    status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
+    dz.querySelector(".dz-title").textContent = file.name;
+    dz.querySelector(".dz-hint").textContent = "Choose a different file";
+    dz.classList.add("has-file");
+    fillColSelect($("pr-id-col"), info.columns, true);
+    autoSelectByName($("pr-id-col"), info.columns, /^(subject_?id|patient_?id|case_?id|id)$|_id$/i);
+    projBuildMapping();
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Upload failed: " + e.message;
+  }
+}
+
+// Cohort mapping (shares the name-matching helpers with Predict; the server
+// validates the final map identically, so the two can't diverge dangerously).
+function projBuildMapping() {
+  const features = (state.projSummary || {}).features || [];
+  const ranges = (state.projSummary || {}).feature_ranges || {};
+  const cols = state.projColumns || [];
+  const map = {};
+  const used = new Set();
+  features.forEach((f) => {
+    const c = state.projMap[f];
+    if (c && cols.includes(c) && !used.has(c)) { map[f] = c; used.add(c); }
+  });
+  const auto = jsAutoMatch(features.filter((f) => !map[f]), cols.filter((c) => !used.has(c)), new Set());
+  Object.entries(auto).forEach(([f, c]) => { if (!used.has(c)) { map[f] = c; used.add(c); } });
+  state.projMap = map;
+  projRenderTable(features, ranges, cols);
+  projUpdateStatus();
+  projUpdateTemplateAndPosition();
+}
+
+function projRenderTable(features, ranges, cols) {
+  const tbl = $("pr-feature-map");
+  tbl.innerHTML = "";
+  const head = document.createElement("tr");
+  ["Model feature", "Training range", "File column", ""].forEach((h) => {
+    const th = document.createElement("th"); th.textContent = h; head.appendChild(th);
+  });
+  tbl.appendChild(head);
+  features.forEach((f) => {
+    const tr = document.createElement("tr");
+    tr.dataset.feature = f;
+    const tdF = document.createElement("td"); tdF.className = "map-feature"; tdF.textContent = f;
+    const r = ranges[f];
+    const tdR = document.createElement("td"); tdR.className = "map-range";
+    tdR.textContent = r ? `${fmtG(r.min)} – ${fmtG(r.max)}` : "—";
+    const tdSel = document.createElement("td");
+    const sel = document.createElement("select"); sel.dataset.feature = f;
+    sel.appendChild(new Option("not mapped", ""));
+    cols.forEach((c) => {
+      const sug = (state.projSuggestions || {})[f] === c;
+      sel.appendChild(new Option(c + (sug ? " (suggested)" : ""), c));
+    });
+    sel.value = state.projMap[f] || "";
+    sel.addEventListener("change", () => onProjMapChange(f, sel.value));
+    tdSel.appendChild(sel);
+    const tdS = document.createElement("td"); tdS.className = "map-state";
+    tr.appendChild(tdF); tr.appendChild(tdR); tr.appendChild(tdSel); tr.appendChild(tdS);
+    tbl.appendChild(tr);
+  });
+  projMarkStatuses();
+}
+
+function onProjMapChange(f, val) {
+  if (val) {
+    Object.keys(state.projMap).forEach((g) => {
+      if (g !== f && state.projMap[g] === val) delete state.projMap[g];
+    });
+    state.projMap[f] = val;
+  } else {
+    delete state.projMap[f];
+  }
+  projRenderTable((state.projSummary || {}).features || [],
+    (state.projSummary || {}).feature_ranges || {}, state.projColumns || []);
+  projUpdateStatus();
+}
+
+function projMarkStatuses() {
+  $("pr-feature-map").querySelectorAll("tr[data-feature]").forEach((tr) => {
+    const mapped = !!state.projMap[tr.dataset.feature];
+    tr.classList.toggle("matched", mapped);
+    tr.classList.toggle("unmatched", !mapped);
+    const st = tr.querySelector(".map-state");
+    if (st) st.textContent = mapped ? "✓" : "!";
+  });
+}
+
+function projUpdateStatus() {
+  const features = (state.projSummary || {}).features || [];
+  const n = features.filter((f) => state.projMap[f]).length;
+  $("pr-map-status").textContent = features.length ? `${n} of ${features.length} features matched` : "";
+}
+
+function projCandidateColumns() {
+  const cols = state.projColumns || [];
+  const excluded = new Set([$("pr-id-col").value].filter(Boolean));
+  return cols.filter((c) => !excluded.has(c));
+}
+
+function projUpdateTemplateAndPosition() {
+  const features = (state.projSummary || {}).features || [];
+  const link = $("pr-template-link");
+  link.classList.toggle("hidden", !state.projModelId);
+  link.href = templateUrl(state.projModelId);
+  $("pr-match-position").disabled = !(features.length && projCandidateColumns().length >= features.length);
+}
+
+function onProjMatchPosition() {
+  const features = (state.projSummary || {}).features || [];
+  const cand = projCandidateColumns();
+  if (!features.length || cand.length < features.length) return;
+  const pairs = features.map((f, i) => `  ${f}  →  ${cand[i]}`).join("\n");
+  if (!confirm("Match by position pairs the model's features with the file's columns in order:\n\n"
+    + pairs + "\n\nWrong column order gives wrong projections with no error. Continue?")) return;
+  const map = {};
+  features.forEach((f, i) => { map[f] = cand[i]; });
+  state.projMap = map;
+  projRenderTable(features, (state.projSummary || {}).feature_ranges || {}, state.projColumns || []);
+  projUpdateStatus();
+}
+
+async function onProjRun() {
+  const mode = document.querySelector('input[name=pr-mode]:checked').value;
+  $("pr-run-error").textContent = "";
+  if (!state.projModelId) { $("pr-run-error").textContent = "Choose a model first."; return; }
+  const timePoints = ($("pr-time-points").value || "").split(",")
+    .map((s) => parseFloat(s.trim())).filter((x) => !Number.isNaN(x));
+  const targetRaw = $("pr-target-events").value;
+  const body = {
+    model_id: state.projModelId, mode, time_points: timePoints,
+    target_events: targetRaw === "" ? null : Number(targetRaw),
+  };
+  if (mode === "population") {
+    body.n = Number($("pr-n").value);
+  } else {
+    body.csv_path = state.projCsvPath;
+    body.feature_map = { ...state.projMap };
+    body.id_col = $("pr-id-col").value || null;
+  }
+  $("pr-step-results").classList.add("hidden");
+  try {
+    const res = await api("/api/project/run", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    state.projJobId = res.job_id;
+    $("pr-run-btn").disabled = true;
+    $("pr-cancel-btn").classList.remove("hidden");
+    $("pr-progress-wrap").classList.remove("hidden");
+    $("pr-progress-wrap").dataset.state = "pending";
+    $("pr-bar-fill").style.width = "0%";
+    pollJob(res.job_id, {
+      onProgress: (s) => renderProgress("pr-progress-wrap", "pr-progress-step",
+        "pr-bar-fill", "pr-progress-detail", s),
+      onDone: showProjResults,
+      onError: (e) => {
+        $("pr-run-btn").disabled = false;
+        $("pr-cancel-btn").classList.add("hidden");
+        $("pr-run-error").textContent = "Failed: " + e;
+      },
+      onCancelled: () => {
+        $("pr-run-btn").disabled = false;
+        $("pr-cancel-btn").classList.add("hidden");
+      },
+    });
+  } catch (e) {
+    $("pr-run-error").textContent = e.message;
+  }
+}
+
+async function onProjCancel() {
+  if (!state.projJobId) return;
+  await api("/api/cancel?id=" + state.projJobId, { method: "POST" });
+  $("pr-progress-step").textContent = "Cancelling…";
+}
+
+async function showProjResults() {
+  $("pr-run-btn").disabled = false;
+  $("pr-cancel-btn").classList.add("hidden");
+  let r;
+  try { r = await api("/api/results?id=" + state.projJobId); }
+  catch (e) { $("pr-run-error").textContent = "Could not load results: " + e.message; return; }
+
+  const unit = r.time_unit ? ` ${r.time_unit}` : "";
+  let summary = `${r.source === "population" ? "Population" : "Cohort"} projection · ` +
+    `N=${fmtNum(r.n)} · supported to t=${(+r.horizon).toPrecision(3)}${unit} · ` +
+    `up to ${(+r.max_events).toFixed(0)} events within follow-up`;
+  const tf = r.time_for;
+  if (tf) {
+    summary += tf.out_of_range
+      ? " · target beyond follow-up (needs extrapolation)"
+      : ` · ${tf.target} events by t=${(+tf.time).toPrecision(3)}${unit}`;
+  }
+  $("pr-result-summary").textContent = summary;
+
+  $("pr-dl-csv").href = "/api/projection?id=" + state.projJobId;
+  $("pr-dl-report").href = "/api/report?id=" + state.projJobId;
+  $("pr-dl-zip").href = "/api/zip?id=" + state.projJobId;
+  $("pr-report-frame").src = "/api/report?id=" + state.projJobId;
+  $("pr-step-results").classList.remove("hidden");
+  $("pr-step-results").scrollIntoView({ behavior: "smooth" });
 }
 
 init().catch((e) => alert("Init failed: " + e.message));

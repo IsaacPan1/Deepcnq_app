@@ -49,6 +49,12 @@ def training_stats(frame: pd.DataFrame) -> dict:
     return {"n": n, "events": events, "censoring_pct": censoring}
 
 
+def training_survival(frame: pd.DataFrame) -> dict:
+    """Kaplan--Meier survival of the (all-rows) training data, stored in the bundle
+    as the population baseline for 'projection from a sample size N'."""
+    return pipeline.km_survival_curve(frame["duration"], frame["event"])
+
+
 def build_args_for(model_name: str, resolved: dict, n_features: int,
                    quantiles: list[float]) -> dict:
     """The exact dict passed to ``build_model`` (ModelConfig fields only)."""
@@ -64,7 +70,7 @@ def build_bundle(path, *, bundle_type: str, model_name: str, build_args: dict,
                  feature_names: list[str], quantiles: list[float], state_dicts: list,
                  scalers: list[dict], feature_ranges: dict, training: dict,
                  event_mapping: dict | None, metrics: dict, time_unit: str | None,
-                 seed: int, device: str = "cpu"):
+                 seed: int, device: str = "cpu", training_survival: dict | None = None):
     """Assemble ``meta`` and write the bundle via :func:`model_io.save_bundle`.
 
     ``scalers`` is one scaler dict per member (``state_dicts`` aligned): the
@@ -92,6 +98,7 @@ def build_bundle(path, *, bundle_type: str, model_name: str, build_args: dict,
         "device": device,
         "seed": int(seed),
         "deepcnq": paths.repo_info(),
+        "training_survival": training_survival or {},
     }
     return model_io.save_bundle(path, state_dicts=state_dicts, meta=meta)
 
@@ -147,4 +154,4 @@ def refit_final(model_name: str, frame: pd.DataFrame, feature_cols: list[str],
         "early_stopped": bool(state.get("early_stopped", False)),
     }
     return {"state_dict": cpu_state, "scaler": scaler_dict(scaler), "metrics": metrics,
-            "build_args": build_args}
+            "build_args": build_args, "training_survival": training_survival(frame)}

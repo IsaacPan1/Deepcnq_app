@@ -390,7 +390,8 @@ def build_demo_model(progress_cb=None, cancel_flag=None, *, model_name: str = DE
         state_dicts=[refit["state_dict"]], scalers=[refit["scaler"]],
         feature_ranges=save_model.feature_ranges(frame, COVARS),
         training=save_model.training_stats(frame), event_mapping=None,
-        metrics=refit["metrics"], time_unit=TIME_UNIT, seed=SEED_MODEL)
+        metrics=refit["metrics"], time_unit=TIME_UNIT, seed=SEED_MODEL,
+        training_survival=refit["training_survival"])
     tick("Done", 1.0)
     size_mb = round(out_path.stat().st_size / (1024 * 1024), 3)
     return {"path": out_path, "size_mb": size_mb, "seconds": seconds,

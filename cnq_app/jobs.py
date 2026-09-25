@@ -202,6 +202,8 @@ class JobManager:
                 self._execute_predict(job)
             elif job.kind == "demo":
                 self._execute_demo(job)
+            elif job.kind == "project":
+                self._execute_project(job)
             else:
                 self._execute(job)
             if job.cancel_event.is_set():
@@ -288,6 +290,9 @@ class JobManager:
             "event_positive": event_positive,
             "feature_cols": feature_cols,
         }))
+        # All-rows KM, stored so single-split/ensemble bundles carry the population
+        # baseline for projection (final bundles recompute it in refit_final).
+        (art_dir / "km.json").write_text(json.dumps(km_curve))
         split_scalers: dict[str, dict] = {}
 
         job.phase = "train"
@@ -520,6 +525,8 @@ class JobManager:
         event_mapping = training.pop("event_mapping", None)
         ranges = json.loads((art / "feature_ranges.json").read_text())
         scalers_by_split = json.loads((art / "scalers.json").read_text())
+        km_path = art / "km.json"
+        train_surv = json.loads(km_path.read_text()) if km_path.exists() else {}
 
         paths.MODELS_DIR.mkdir(parents=True, exist_ok=True)
         out_path = paths.MODELS_DIR / f"{name}.cnqmodel"
@@ -552,6 +559,7 @@ class JobManager:
             build_args = refit["build_args"]
             ranges = save_model.feature_ranges(frame, feature_cols)
             training = save_model.training_stats(frame)
+            train_surv = refit["training_survival"]
         elif bundle_type == "single_split":
             split_index = int(cfg.get("split_index", 0))
             wpath = art / "weights" / f"{model_name}__{split_index}.pt"
@@ -582,7 +590,8 @@ class JobManager:
             out_path, bundle_type=bundle_type, model_name=model_name, build_args=build_args,
             feature_names=feature_cols, quantiles=quantiles, state_dicts=state_dicts,
             scalers=member_scalers, feature_ranges=ranges, training=training,
-            event_mapping=event_mapping, metrics=metrics, time_unit=time_unit, seed=seed)
+            event_mapping=event_mapping, metrics=metrics, time_unit=time_unit, seed=seed,
+            training_survival=train_surv)
         meta = model_io.read_meta(out_path)
         job.results = {
             "kind": "save",
@@ -660,6 +669,48 @@ class JobManager:
         meta = model_io.read_meta(info["path"])
         job.results = {"kind": "demo", "summary": model_io.summarize(meta),
                        "size_mb": info["size_mb"], "seconds": info["seconds"]}
+
+    # ----------------------------------------------------------------- project
+    def _execute_project(self, job: Job):
+        """Population or cohort cumulative-events projection. Population is
+        torch-free (scaled training KM); cohort aggregates model predictions."""
+        import demo
+        import model_io
+        import project
+        import project_report
+
+        cfg = job.config
+        path = demo.bundle_for_id(cfg.get("model_id"))
+        if path is None or not path.exists():
+            raise RuntimeError(f"model {cfg.get('model_id')!r} could not be found")
+        meta = model_io.read_meta(path)
+        job.phase = "prepare"
+        job.step = "Projecting"
+        job._override = 0.2
+
+        if cfg.get("mode") == "population":
+            proj = project.population_projection(meta, float(cfg.get("n")))
+        else:
+            import pipeline
+            import predict as predict_mod
+            bundle = model_io.load_bundle(path)
+            raw = pipeline.load_frame(cfg["csv_path"])
+            res = predict_mod.run_prediction(bundle, raw, cfg.get("feature_map") or {},
+                                             id_col=cfg.get("id_col") or None)
+            horizon = float((meta.get("training_survival") or {}).get("horizon") or 0.0)
+            proj = project.cohort_projection(res["pred_log"], res["quantiles"], horizon)
+
+        job._override = 0.85
+        job.step = "Building the report"
+        queries = {}
+        time_points = cfg.get("time_points") or []
+        if time_points:
+            queries["events_at"] = project.events_at_times(proj, [float(x) for x in time_points])
+        if cfg.get("target_events") not in (None, ""):
+            queries["time_for"] = project.time_for_events(proj, float(cfg["target_events"]))
+        job.phase = "report"
+        artifacts = project_report.build(job.dir, meta, proj, queries)
+        job.results = {"kind": "project", **artifacts}
 
 
 def _safe_name(name: str) -> str:
