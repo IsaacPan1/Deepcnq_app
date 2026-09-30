@@ -180,6 +180,53 @@ def _with_ids(frame: pd.DataFrame, prefix: str, *, outcomes: bool) -> pd.DataFra
     return out
 
 
+def training_survival_curve() -> dict:
+    """Recreate the deterministic demo population's Kaplan--Meier curve.
+
+    Older committed demo bundles predate the ``training_survival`` field.  The
+    source demo CSV is deterministic, so this keeps Population size N usable
+    without asking a new user to rebuild the demo model first.
+    """
+    frame = pd.read_csv(resolve_csv("train"), usecols=["time", "event"])
+    time = frame["time"].to_numpy(dtype=float)
+    event = frame["event"].to_numpy(dtype=int)
+    order = np.argsort(time)
+    time, event = time[order], event[order]
+    uniq = np.unique(time)
+    surv, greenwood = 1.0, 0.0
+    values, variances = [], []
+    last_event_time = 0.0
+    for t in uniq:
+        at_risk = int(np.sum(time >= t))
+        deaths = int(np.sum((time == t) & (event == 1)))
+        if at_risk and deaths:
+            surv *= 1.0 - deaths / at_risk
+            if at_risk > deaths:
+                greenwood += deaths / (at_risk * (at_risk - deaths))
+            last_event_time = float(t)
+        values.append(float(surv))
+        variances.append(float(surv * surv * greenwood))
+    last_time = float(uniq[-1]) if len(uniq) else 0.0
+    return {
+        "time": [0.0, *[float(t) for t in uniq]],
+        "survival": [1.0, *values],
+        "var": [0.0, *variances],
+        "n": int(len(time)),
+        "n_events": int(event.sum()),
+        "horizon": last_event_time,
+        "last_is_censored": bool(last_time > last_event_time),
+    }
+
+
+def with_training_survival(meta: dict) -> dict:
+    """Add the reproducible demo curve when an older bundle lacks it."""
+    if (meta.get("training_survival") or {}).get("time"):
+        return meta
+    upgraded = dict(meta)
+    upgraded["training_survival"] = training_survival_curve()
+    return upgraded
+
+
 # --------------------------------------------------------------------------- #
 # path resolution
 # --------------------------------------------------------------------------- #

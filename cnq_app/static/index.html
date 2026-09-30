@@ -129,12 +129,12 @@ S002,36.0,0,64,1.2,0</pre>
     <h2><span class="num">3</span> Models and settings</h2>
 
     <div class="segmented" role="radiogroup">
-      <label><input type="radio" name="settings-mode" value="manual" checked> Choose settings</label>
-      <label><input type="radio" name="settings-mode" value="auto"> Auto-tune</label>
+      <label><input type="radio" name="settings-mode" value="auto" checked> Auto-tune (recommended)</label>
+      <label><input type="radio" name="settings-mode" value="manual"> Advanced settings</label>
     </div>
 
-    <div id="manual-block">
-      <p class="field-label">Models <span class="muted">KAN and MLP — sufficient for tabular data</span></p>
+    <div id="manual-block" class="hidden">
+      <p class="field-label">Models <span class="muted">KAN and MLP for tabular data; transformers only for numeric features derived from text or annotations</span></p>
       <div id="model-list" class="chips chips-lg"></div>
 
       <p class="field-label">Hyperparameters
@@ -152,9 +152,9 @@ S002,36.0,0,64,1.2,0</pre>
       </div>
     </div>
 
-    <div id="autotune-block" class="hidden subpanel">
-      <p class="muted">Search several models and settings on your data, then apply the best.
-        Selected by validation IPCW pinball; you then train the winner normally.</p>
+    <div id="autotune-block" class="subpanel">
+      <p class="muted">Let CNQ compare several models and settings on your data, then apply
+        the best result. Advanced settings are available if you need to customize the search winner.</p>
       <p class="field-label">Model families to try</p>
       <div class="chips" id="tune-families">
         <label class="inline"><input type="checkbox" value="KAN_gaps" checked> KAN-CNQ</label>
@@ -184,6 +184,7 @@ S002,36.0,0,64,1.2,0</pre>
         <div class="table-scroll"><table id="tune-table"></table></div>
         <div class="actions"><button id="tune-use-best" class="primary">Use best settings</button></div>
       </div>
+      <p id="tune-applied" class="status"></p>
     </div>
 
     <label>Quantile levels
@@ -442,6 +443,9 @@ S002,36.0,0,64,1.2,0</pre>
       <p class="muted">Scales the training population's event trend (Kaplan–Meier) to N subjects.</p>
     </div>
     <div id="pr-cohort-block" class="subpanel hidden">
+      <div class="actions">
+        <button type="button" id="pr-use-sample" class="btn btn-outline">Use simulated sample cohort</button>
+      </div>
       <label class="dropzone" for="pr-file-input">
         <input type="file" id="pr-file-input" accept=".csv,text/csv">
         <span class="dz-title">Choose a cohort CSV</span>
@@ -498,6 +502,6 @@ S002,36.0,0,64,1.2,0</pre>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="/app.js?v=12"></script>
+<script src="/app.js?v=13"></script>
 </body>
 </html>

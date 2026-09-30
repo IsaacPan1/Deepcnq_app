@@ -686,6 +686,8 @@ class JobManager:
         if path is None or not path.exists():
             raise RuntimeError(f"model {cfg.get('model_id')!r} could not be found")
         meta = model_io.read_meta(path)
+        if cfg.get("model_id") == demo.DEMO_ID:
+            meta = demo.with_training_survival(meta)
         job.phase = "prepare"
         job.step = "Projecting"
         job._override = 0.2

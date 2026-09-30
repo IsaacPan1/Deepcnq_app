@@ -86,6 +86,16 @@ def test_ensure_demo_data_is_byte_identical(demo_dirs):
     assert new["note"].str.contains("out-of-range").sum() == 2
 
 
+def test_old_demo_bundle_gets_population_curve(demo_dirs):
+    upgraded = demo.with_training_survival({"training_survival": {}})
+    curve = upgraded["training_survival"]
+    assert curve["n"] == demo.N_TRAIN
+    assert curve["n_events"] > 0
+    assert curve["time"][0] == 0.0
+    assert len(curve["time"]) == len(curve["survival"]) == len(curve["var"])
+    assert curve["horizon"] > 0
+
+
 def test_concurrent_generation_produces_one_valid_set(demo_dirs):
     _, cache = demo_dirs
     errors = []
@@ -163,6 +173,7 @@ def test_build_endpoint_starts_job_attaches_and_registers(demo_dirs, monkeypatch
         st, body = _http(f"{base}/api/models")
         entry = next(m for m in json.loads(body)["models"] if m.get("is_demo"))
         assert not entry.get("needs_build") and entry.get("n_features") == 12
+        assert entry.get("has_population") is True
     finally:
         httpd.shutdown()
 

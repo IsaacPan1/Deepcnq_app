@@ -27,6 +27,7 @@ const state = {
   runSplits: 1,          // repeated splits the finished run used
   tuneJobId: null,       // auto-tune search job
   tuneBest: null,        // winning {model, custom, ...} from the search
+  tuneApplied: false,    // winner copied into the training config
   customTouched: false,  // user edited a custom field -> stop auto-filling defaults
   saveJobId: null,
   // predict tab
@@ -173,6 +174,7 @@ function onSettingsModeChange() {
   const mode = document.querySelector('input[name=settings-mode]:checked').value;
   $("manual-block").classList.toggle("hidden", mode !== "manual");
   $("autotune-block").classList.toggle("hidden", mode !== "auto");
+  updateGating();
 }
 
 // Pre-fill the Custom fields with data-driven defaults (until the user edits them).
@@ -186,6 +188,9 @@ function applySuggestedCustom(c) {
 
 async function onFindBest() {
   $("tune-error").textContent = "";
+  state.tuneApplied = false;
+  $("tune-applied").textContent = "";
+  updateGating();
   if (!state.csvPath) { $("tune-error").textContent = "Upload data first."; return; }
   const families = [...document.querySelectorAll("#tune-families input:checked")].map((c) => c.value);
   if (!families.length) { $("tune-error").textContent = "Choose at least one model family."; return; }
@@ -257,8 +262,9 @@ function onUseBest() {
   buildModelChips();
   applySuggestedCustom(b.custom);              // fill its hyper-parameters
   state.customTouched = true;
-  document.querySelector('input[name=settings-mode][value=manual]').checked = true;
-  onSettingsModeChange();                      // back to Manual so the user can Start training
+  state.tuneApplied = true;
+  const label = (MODEL_INFO[b.model] || {}).name || b.model;
+  $("tune-applied").textContent = `${label} and its best settings are ready. Continue to Start training.`;
   updateGating();
   scheduleValidate();
 }
@@ -353,6 +359,9 @@ async function handleFile(file) {
       body: buf,
     });
     state.csvPath = info.csv_path;
+    state.tuneBest = null;
+    state.tuneApplied = false;
+    $("tune-applied").textContent = "";
     state.fileName = info.file_name || file.name;
     state.columns = info.columns;
     state.numeric = info.numeric_columns;
@@ -633,6 +642,8 @@ function escapeHtml(s) {
 function canRun() {
   const v = state.lastValidation;
   if (!v) return false;
+  const mode = document.querySelector('input[name=settings-mode]:checked')?.value;
+  if (mode === "auto" && !state.tuneApplied) return false;
   if (state.models.size === 0) return false;
   if ((v.errors || []).length) return false;
   return (v.warnings || []).every((w) => state.acks.has(warnKey(w)));
@@ -646,7 +657,9 @@ function updateGating() {
   const hint = $("run-error");
   if (ok || !v) { if (hint.dataset.gate) { hint.textContent = ""; delete hint.dataset.gate; } return; }
   hint.dataset.gate = "1";
-  if (state.models.size === 0) hint.textContent = "Select at least one model.";
+  const mode = document.querySelector('input[name=settings-mode]:checked')?.value;
+  if (mode === "auto" && !state.tuneApplied) hint.textContent = "Run Auto-tune and select Use best settings before training.";
+  else if (state.models.size === 0) hint.textContent = "Select at least one model.";
   else if ((v.errors || []).length) hint.textContent = "Fix the data errors above before training.";
   else hint.textContent = "Confirm the warnings above (tick “I understand”) to enable training.";
 }
@@ -1536,6 +1549,7 @@ function initProject() {
   document.querySelectorAll('input[name=pr-mode]').forEach((r) =>
     r.addEventListener("change", onProjModeChange));
   $("pr-file-input").addEventListener("change", onProjDataUpload);
+  $("pr-use-sample").addEventListener("click", onProjUseSample);
   $("pr-id-col").addEventListener("change", projUpdateTemplateAndPosition);
   $("pr-match-position").addEventListener("click", onProjMatchPosition);
   $("pr-run-btn").addEventListener("click", onProjRun);
@@ -1599,7 +1613,6 @@ async function onProjDataUpload(ev) {
   const file = ev.target.files[0];
   if (!file) return;
   const status = $("pr-upload-status");
-  const dz = $("pr-file-input").closest(".dropzone");
   status.classList.remove("is-error");
   if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
   status.textContent = `Uploading ${file.name}…`;
@@ -1608,20 +1621,68 @@ async function onProjDataUpload(ev) {
     const info = await api("/api/predict/upload-data", {
       method: "POST", headers: { "Content-Type": "text/csv", "X-Filename": file.name }, body: buf,
     });
-    state.projCsvPath = info.csv_path;
-    state.projColumns = info.columns;
-    state.projMap = {};
-    state.projSuggestions = {};
-    status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
-    dz.querySelector(".dz-title").textContent = file.name;
-    dz.querySelector(".dz-hint").textContent = "Choose a different file";
-    dz.classList.add("has-file");
-    fillColSelect($("pr-id-col"), info.columns, true);
-    autoSelectByName($("pr-id-col"), info.columns, /^(subject_?id|patient_?id|case_?id|id)$|_id$/i);
-    projBuildMapping();
+    applyProjCohort(info, file.name);
   } catch (e) {
     status.classList.add("is-error");
     status.textContent = "Upload failed: " + e.message;
+  }
+}
+
+function applyProjCohort(info, fileName) {
+  const status = $("pr-upload-status");
+  const dz = $("pr-file-input").closest(".dropzone");
+  state.projCsvPath = info.csv_path;
+  state.projColumns = info.columns;
+  state.projMap = {};
+  state.projSuggestions = {};
+  status.classList.remove("is-error");
+  status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
+  dz.querySelector(".dz-title").textContent = fileName;
+  dz.querySelector(".dz-hint").textContent = "Choose a different file";
+  dz.classList.add("has-file");
+  fillColSelect($("pr-id-col"), info.columns, true);
+  autoSelectByName($("pr-id-col"), info.columns, /^(subject_?id|patient_?id|case_?id|id)$|_id$/i);
+  projBuildMapping();
+}
+
+function csvCell(value) {
+  const s = String(value ?? "");
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+async function onProjUseSample() {
+  const status = $("pr-upload-status");
+  status.classList.remove("is-error");
+  if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
+  const summary = state.projSummary || {};
+  const features = summary.features || [];
+  if (!features.length) { status.classList.add("is-error"); status.textContent = "Choose a model first."; return; }
+  status.textContent = "Creating a simulated cohort for this model…";
+  const ranges = summary.feature_ranges || {};
+  const rows = [];
+  for (let i = 0; i < 20; i += 1) {
+    const values = features.map((f, j) => {
+      const r = ranges[f] || {};
+      const lo = Number(r.min), hi = Number(r.max), med = Number(r.median);
+      if (Number.isFinite(lo) && Number.isFinite(hi)) {
+        const frac = 0.25 + (((i * 7 + j * 11) % 51) / 100);
+        return (lo + (hi - lo) * frac).toPrecision(8);
+      }
+      return Number.isFinite(med) ? med : 0;
+    });
+    rows.push([`sample_${String(i + 1).padStart(2, "0")}`, ...values]);
+  }
+  const csv = [["subject_id", ...features], ...rows]
+    .map((row) => row.map(csvCell).join(",")).join("\n") + "\n";
+  try {
+    const info = await api("/api/predict/upload-data", {
+      method: "POST", headers: { "Content-Type": "text/csv", "X-Filename": "simulated_sample_cohort.csv" },
+      body: csv,
+    });
+    applyProjCohort(info, "simulated_sample_cohort.csv");
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Could not create the sample cohort: " + e.message;
   }
 }
 

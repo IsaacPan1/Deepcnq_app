@@ -395,6 +395,11 @@ def test_run_payload_matches_api(trained_server):
     assert "model_id: state.predictModelId" in src
     assert "model_ref" not in src        # no display-label lookups remain
 
+    page = (APP_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'name="settings-mode" value="auto" checked' in page
+    assert "Advanced settings" in page
+    assert "pr-use-sample" in page and "onProjUseSample" in src
+
     base, run_id, _ = trained_server
     name = _ensure_saved(base, run_id)
     csv_path = _upload_csv(base, pd.read_csv(paths.SAMPLE_DATA))

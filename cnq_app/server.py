@@ -499,7 +499,8 @@ class Handler(SimpleHTTPRequestHandler):
             entry["needs_build"] = True
         else:
             try:
-                entry.update(model_io.summarize(model_io.read_meta(demo_path)))
+                meta = demo.with_training_survival(model_io.read_meta(demo_path))
+                entry.update(model_io.summarize(meta))
             except Exception as exc:  # noqa: BLE001 - a broken demo bundle needs rebuilding
                 entry.update(needs_rebuild=True, error=str(exc))
         out.append(entry)
@@ -795,6 +796,9 @@ class Handler(SimpleHTTPRequestHandler):
         meta = model_io.read_meta(path)
         mode = cfg.get("mode")
         if mode == "population":
+            if cfg.get("model_id") == "demo":
+                import demo
+                meta = demo.with_training_survival(meta)
             if not (meta.get("training_survival") or {}).get("time"):
                 return self._error("this model doesn't support population projection; re-save it")
             try:
