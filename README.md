@@ -5,6 +5,8 @@ It opens in your web browser, but **everything runs on your own computer**. Your
 
 First-time setup takes about 10 minutes.
 
+![Start CNQ in three steps](cnq_app/docs/images/cnq-start-three-steps.png)
+
 ---
 
 ## 1. Install Python and Git (one time only)
@@ -69,6 +71,12 @@ Open this address in your browser:
 
 - Keep the terminal window **open** while you use the app.
 - To stop the app, click the terminal and press **Ctrl+C**.
+
+## Typical workflow
+
+![CNQ workflow from imported data to predictions or population projections](cnq_app/docs/images/cnq-interface-workflow.png)
+
+Import your data, choose the covariates, let Auto-tune find suitable settings, and save the trained model. You can then use that model to predict outcomes for new subjects or project population-level trends.
 
 ---
 
