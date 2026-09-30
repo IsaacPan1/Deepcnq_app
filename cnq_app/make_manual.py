@@ -219,6 +219,9 @@ def build(path: Path) -> Path:
                     set_cell_shading(cell, pale_blue)
 
         for row in word_table.rows:
+            row_properties = row._tr.get_or_add_trPr()
+            cant_split = OxmlElement("w:cantSplit")
+            row_properties.append(cant_split)
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     paragraph.paragraph_format.space_after = Pt(0)
@@ -313,6 +316,16 @@ def build(path: Path) -> Path:
         "Aim for about 100 observed events and at least 10 events in each data split.",
     ])
 
+    h2("2 1 Local storage and privacy")
+    para("CNQ runs locally, but uploaded files are not temporary. Training, prediction, "
+         "and cohort CSV files are copied to cnq_app/jobs/uploads. Recent run folders "
+         "under cnq_app/jobs also contain reports, plots, predictions, model artifacts, "
+         "and result zip files. A training result zip includes a copy of the uploaded "
+         "data named input_data.csv.")
+    para("CNQ keeps the 20 most recent run folders by default, but uploaded files are "
+         "not removed automatically. Treat the CNQ folder as containing company data "
+         "and follow your organization's retention and deletion procedures.")
+
     # 3 Train and save
     training_heading = doc.add_heading("3 Train and save a model", level=1)
     training_heading.paragraph_format.page_break_before = True
@@ -328,16 +341,20 @@ def build(path: Path) -> Path:
         "Leave Auto-tune selected and choose Standard search effort for a typical analysis.",
         "Select Find best settings, review the leaderboard, and select Use best settings.",
         "Select Start training, resolve any validation warnings, and review the results.",
-        "Save a model. Final model refit on all data is usually the appropriate reusable model.",
+        "When training finishes, select Save model, choose what to save, enter a name, and save it.",
     ])
-    para("A saved .cnqmodel file is self-contained. Download and archive any model that "
-         "must be retained because CNQ keeps only a limited number of recent training runs.")
+    para("Training and Auto-tune do not automatically create a reusable model. Save model "
+         "writes a self-contained .cnqmodel file to cnq_app/models. It remains available "
+         "after restarting CNQ and appears in Predict and Project. If it is not listed, "
+         "select Refresh list.")
+    para("Saved models are not pruned with old runs. Download and archive any approved "
+         "model that must be retained outside the app folder.")
 
     h2("3 1 Model choices")
     table(["Model", "Use"], [
-        ["KAN CNQ", "Standard option for numeric tabular covariates. Included in Auto-tune."],
-        ["MLP CNQ", "Strong numeric tabular baseline. Included in Auto-tune."],
-        ["Trans CNQ or TransKAN CNQ", "Advanced option only when approved numeric covariates contain information derived from text or structured annotations and attention is scientifically justified."],
+        ["KAN CNQ", "Standard numeric tabular option. Included in Auto-tune."],
+        ["MLP CNQ", "Numeric tabular baseline. Included in Auto-tune."],
+        ["Trans CNQ or TransKAN CNQ", "Advanced option for approved numeric features derived from text or annotations, when attention is scientifically justified."],
     ], widths=[2.05, 4.35])
     labeled_para("Advanced settings. ",
                  "Use them only when the analysis plan requires specific model or "
