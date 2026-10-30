@@ -116,6 +116,50 @@ Then start the app as usual. If new packages are needed, they install automatica
 
 ---
 
+## Running on Google Cloud (Vertex AI Workbench)
+
+CNQ runs the same way on a Vertex AI Workbench instance — the browser and the app
+just happen to be separated by Google's notebook proxy instead of both sitting on
+your own computer.
+
+1. **Google Cloud Console → Vertex AI → Workbench.** Select your instance (start it
+   if it's stopped), then click **Open JupyterLab**.
+2. **First time only** — open a terminal in JupyterLab (**File → New → Terminal**)
+   and clone the app:
+   ```
+   git clone --recursive https://github.com/IsaacPan1/Deepcnq_app
+   ```
+3. **Start CNQ** from the same terminal:
+   ```
+   cd Deepcnq_app/cnq_app
+   python run.py 8000
+   ```
+4. **Open the app** at the same JupyterLab address but with `/lab` replaced by
+   `/proxy/8000/` — for example, if JupyterLab is at
+   `https://abc123-dot-us-central1.notebooks.googleusercontent.com/lab`, open:
+   ### `https://abc123-dot-us-central1.notebooks.googleusercontent.com/proxy/8000/`
+   Keep the trailing slash. Keep the terminal open while you use the app; **Ctrl+C**
+   stops it, and `git pull --recurse-submodules` from the `Deepcnq_app` folder
+   updates it, the same as a local install.
+
+From here the app works exactly as described below — **with one difference**:
+there's no file picker dialog reaching back to your laptop, because the browser
+and the app aren't on the same machine. Instead:
+
+1. **Upload your CSV into JupyterLab itself** — the upload icon (↑) in the file
+   browser on the left, or drag the file into that panel.
+2. **Right-click the uploaded file → Copy Path.**
+3. Back in CNQ, paste that path into the **"or paste a file path"** field next to
+   the upload box (on both the **Train** and **Predict** tabs) and press Enter or
+   click **Load from path**. CNQ reads the file directly off the Workbench
+   instance's disk — no size limit, and no second upload of the bytes through the
+   browser.
+
+This same path field also works for a very large file on your own computer when
+running CNQ locally — type its path instead of dragging it in.
+
+---
+
 ## Preparing your data
 
 Upload **one CSV file** with **one row per subject**:
@@ -144,6 +188,8 @@ More details are in [`cnq_app/README.md`](cnq_app/README.md).
 | Page looks plain or buttons don't work | Use exactly `http://127.0.0.1:8000/`, then press **Ctrl+Shift+R** (Mac: **Cmd+Shift+R**). |
 | Red banner about missing packages, or installation failed | Check your internet connection, then run `python run.py --reinstall` (Mac: `python3 run.py --reinstall`). |
 | `No Python at ...` (a moved or uninstalled Python) | Delete the `.venv` folder inside `cnq_app` and run `run.py` again — it rebuilds the environment from scratch. |
+| On Workbench: blank page, or a generic "404: Not Found" / "Init failed" error | Use the URL ending in `/proxy/8000/` with the trailing slash (not `/lab`), then hard refresh with **Ctrl+Shift+R**. |
+| "Could not load that path" on Workbench | The path must point to a file already on the Workbench instance (uploaded through JupyterLab's file browser), not a path on your own laptop — see *Running on Google Cloud* above. |
 
 Still stuck? [Open an issue](https://github.com/IsaacPan1/Deepcnq_app/issues) or contact **Isaac, your-email@unc.edu**.
 

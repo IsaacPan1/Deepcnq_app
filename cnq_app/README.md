@@ -73,6 +73,15 @@ Use one CSV with a single header row and **one row per subject**. Once the app
 is running you can download a template from the upload step (or the sample
 dataset).
 
+**Loading it in:** drag the file into the upload box, or — on both the **Train**
+and **Predict** tabs — paste a file path into the **"or paste a file path"**
+field next to it and press Enter. The app reads that file directly off the
+same machine it's running on. This is the way to go for a large file, or when
+running on a cloud notebook such as **Google Vertex AI Workbench**, where the
+browser and the app aren't on the same machine — see *Running on Google Cloud*
+in the [top-level README](../README.md) for the Workbench-specific steps
+(upload into JupyterLab, then copy its path in).
+
 | Column | What it is | Example |
 |--------|-----------|---------|
 | Follow-up time | Time until the event or last contact — a positive number | `12.4` |

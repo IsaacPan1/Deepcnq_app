@@ -303,6 +303,26 @@ def build(path: Path) -> Path:
          "wait until the terminal prompts you to open http://127.0.0.1:8000/.")
     labeled_para("To stop CNQ. ", "Return to the terminal and press Ctrl+C.")
 
+    h2("1 3 Google Cloud (Vertex AI Workbench)")
+    para("CNQ runs the same way on a Vertex AI Workbench instance. The browser and "
+         "the app are just on different machines, connected through Google's "
+         "notebook proxy, so starting it takes one extra step.")
+    steps([
+        "Google Cloud Console, Vertex AI, Workbench. Select the instance, start it "
+        "if it is stopped, and click Open JupyterLab.",
+        "First time only: open a terminal in JupyterLab (File, New, Terminal) and "
+        "clone the app with the same command as step 1 1.",
+        "From that terminal: cd Deepcnq_app/cnq_app, then python run.py 8000.",
+        "Open the app at the same JupyterLab address with /lab replaced by "
+        "/proxy/8000/, keeping the trailing slash.",
+    ])
+    para("From here CNQ works exactly as described below, with one difference: the "
+         "upload box cannot reach files on your laptop, because the browser and the "
+         "app are not on the same machine. Upload the CSV into JupyterLab's own file "
+         "browser first (the upload icon, or drag it in), right-click the file and "
+         "choose Copy Path, then paste that path into CNQ's \"or paste a file path\" "
+         "field next to the upload box and press Enter. See 2 1 Loading your data.")
+
     # 2 Prepare data
     h1("2 Prepare your data")
     para("Upload one CSV file with one header row and one row per subject. The app "
@@ -316,7 +336,20 @@ def build(path: Path) -> Path:
         "Aim for about 100 observed events and at least 10 events in each data split.",
     ])
 
-    h2("2 1 Local storage and privacy")
+    h2("2 1 Loading your data")
+    para("Two ways to get a CSV into CNQ, available on both the Train and the "
+         "Predict tab:")
+    bullets([
+        "Drag the file into the upload box, or click it to browse for the file.",
+        "Or paste a file path into the \"or paste a file path\" field next to the "
+        "upload box and press Enter. CNQ reads the file directly from disk on the "
+        "machine it is running on.",
+    ])
+    para("The path field is the only option on Google Cloud Workbench, since the "
+         "upload box there cannot reach your laptop's files (see 1 3). It is also "
+         "useful for a large local file, since it has no upload size limit.")
+
+    h2("2 2 Local storage and privacy")
     para("CNQ runs locally, but uploaded files are not temporary. Training, prediction, "
          "and cohort CSV files are copied to cnq_app/jobs/uploads. Recent run folders "
          "under cnq_app/jobs also contain reports, plots, predictions, model artifacts, "
@@ -423,6 +456,8 @@ def build(path: Path) -> Path:
         ["Port 8000 is in use", "Run python run.py 8001 and open http://127.0.0.1:8001/."],
         ["Page is unformatted", "Use the exact local address and hard refresh with Ctrl+Shift+R or Cmd+Shift+R."],
         ["Projection is unavailable", "Save or rebuild the model with the current CNQ version so it includes the training curve."],
+        ["Workbench: blank page or 404/Init failed error", "Use the address ending in /proxy/8000/ with the trailing slash, not /lab, then hard refresh with Ctrl+Shift+R."],
+        ["Workbench: Could not load that path", "The path must point to a file already uploaded into JupyterLab on the Workbench instance, not a path on your laptop. See 1 3."],
     ], widths=[2.15, 4.25])
 
     # 9 Update
