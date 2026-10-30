@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import re
+import sys
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -217,11 +218,25 @@ class Handler(SimpleHTTPRequestHandler):
 
     server_version = "CNQApp/1.0"
 
+    # When True, every request's received path is logged (set by main() from
+    # --verbose or CNQ_VERBOSE). Off by default to keep the console quiet.
+    verbose = bool(os.environ.get("CNQ_VERBOSE"))
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
     def log_message(self, fmt, *args):  # keep the console quiet
         pass
+
+    def _log_path(self, method):
+        """Verbose: show the exact path the server received for this request.
+
+        Behind a reverse proxy (jupyter-server-proxy) the mount prefix should be
+        stripped before it reaches us, so this reveals what the proxy forwards —
+        the key fact for diagnosing a broken proxied mount. See /api/ping too.
+        """
+        if self.verbose:
+            print(f"[req] {method} {self.path}", file=sys.stderr, flush=True)
 
     # ---- helpers ----
     def _send_json(self, obj, status=200):
@@ -259,12 +274,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- routing ----
     def do_GET(self):
+        self._log_path("GET")
         parsed = urlparse(self.path)
         route = parsed.path
         if not route.startswith("/api/"):
             return super().do_GET()  # static file serving from static/
         query = parse_qs(parsed.query)
         try:
+            if route == "/api/ping":
+                # Liveness + proxy diagnostic: echoes the exact path the server
+                # received. Behind jupyter-server-proxy the prefix (/proxy/8000)
+                # should already be stripped, so path_seen should read "/api/ping".
+                return self._send_json({"ok": True, "path_seen": self.path})
             if route == "/api/health":
                 return self._send_json(health_report())
             if route == "/api/config":
@@ -311,6 +332,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def do_DELETE(self):
+        self._log_path("DELETE")
         parsed = urlparse(self.path)
         route = parsed.path
         query = parse_qs(parsed.query)
@@ -322,6 +344,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def do_POST(self):
+        self._log_path("POST")
         parsed = urlparse(self.path)
         route = parsed.path
         query = parse_qs(parsed.query)
@@ -863,11 +886,17 @@ def parse_args(argv=None):
                         help="port to listen on (default: 8000)")
     parser.add_argument("-b", "--bind", default="127.0.0.1",
                         help="address to bind (default: 127.0.0.1)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="log each request's received path to stderr "
+                             "(useful for diagnosing a reverse-proxy mount); "
+                             "also enabled by the CNQ_VERBOSE env var")
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.verbose:
+        Handler.verbose = True
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     try:
         httpd = Server((args.bind, args.port), Handler)
@@ -882,6 +911,8 @@ def main(argv=None) -> int:
     display_host = "127.0.0.1" if args.bind in ("0.0.0.0", "::", "") else args.bind
     print(f"Serving CNQ app on {args.bind}:{args.port} "
           f"(http://{display_host}:{args.port}/)")
+    if Handler.verbose:
+        print("Verbose: logging each request's received path to stderr.")
     repo = paths.repo_info()
     if repo["found"]:
         print(f"Repository: {repo['path']} ({repo['version_str']})")

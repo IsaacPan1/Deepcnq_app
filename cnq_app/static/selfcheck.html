@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CNQ self-check</title>
+  <!-- Deliberately standalone: no style.css, no app.js. This page must work even
+       when those fail to load behind a reverse proxy — that is what it diagnoses. -->
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 820px; padding: 0 1rem; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    code { background: #f0f0f0; padding: 0 .25em; border-radius: 3px; word-break: break-all; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    th { background: #fafafa; }
+    .pass { color: #0a7d2c; font-weight: 600; }
+    .fail { color: #c0271a; font-weight: 600; }
+    .muted { color: #666; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem; }
+    dt { font-weight: 600; }
+    dd { margin: 0; }
+  </style>
+</head>
+<body>
+<h1>CNQ self-check</h1>
+<p class="muted">Diagnoses whether the app can reach its own resources behind a
+  reverse proxy (e.g. <code>jupyter-server-proxy</code> at <code>/proxy/8000/</code>).
+  Open this at the same URL you use for the app, with <code>selfcheck.html</code>
+  on the end.</p>
+
+<dl>
+  <dt>window.location.href</dt><dd><code id="loc"></code></dd>
+  <dt>window.location.pathname</dt><dd><code id="path"></code></dd>
+  <dt>computed APP_BASE</dt><dd><code id="base"></code></dd>
+</dl>
+
+<table>
+  <thead><tr><th>Check</th><th>Resolved URL</th><th>HTTP</th><th>Result</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+"use strict";
+
+// Standalone copy of app.js's computeAppBase — keep the two in sync.
+// (Unit-tested in tests/test_base_path.py against the app.js source.)
+function computeAppBase(pathname) {
+  var p = pathname || "/";
+  var cut = p.search(/[?#]/);
+  if (cut >= 0) p = p.slice(0, cut);
+  if (p.charAt(0) !== "/") p = "/" + p;
+  if (p.charAt(p.length - 1) === "/") return p;
+  var slash = p.lastIndexOf("/");
+  var last = p.slice(slash + 1);
+  if (last.indexOf(".") >= 0) return p.slice(0, slash + 1);
+  return p + "/";
+}
+
+var APP_BASE = computeAppBase(window.location.pathname);
+function url(path) {
+  if (path == null) return APP_BASE;
+  var p = String(path);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(p) || p.slice(0, 2) === "//") return p;
+  return APP_BASE + (p.charAt(0) === "/" ? p.slice(1) : p);
+}
+
+document.getElementById("loc").textContent = window.location.href;
+document.getElementById("path").textContent = window.location.pathname;
+document.getElementById("base").textContent = APP_BASE;
+
+// Each check: a label and the path to resolve + fetch. For the ping endpoint
+// we also surface the server's echoed path_seen, which should read "/api/ping".
+var CHECKS = [
+  { label: "ping endpoint (/api/ping)", path: "/api/ping", ping: true },
+  { label: "stylesheet (style.css)",    path: "style.css" },
+  { label: "app script (app.js)",       path: "app.js" },
+  { label: "health (/api/health)",      path: "/api/health" },
+  { label: "models (/api/models)",      path: "/api/models" }
+];
+
+var tbody = document.getElementById("rows");
+
+function row(label, resolved) {
+  var tr = document.createElement("tr");
+  var tdL = document.createElement("td"); tdL.textContent = label;
+  var tdU = document.createElement("td");
+  var codeU = document.createElement("code"); codeU.textContent = resolved; tdU.appendChild(codeU);
+  var tdH = document.createElement("td"); tdH.textContent = "…";
+  var tdR = document.createElement("td"); tdR.textContent = "…";
+  tr.appendChild(tdL); tr.appendChild(tdU); tr.appendChild(tdH); tr.appendChild(tdR);
+  tbody.appendChild(tr);
+  return { http: tdH, result: tdR };
+}
+
+CHECKS.forEach(function (c) {
+  var resolved = url(c.path);
+  var cells = row(c.label, resolved);
+  fetch(resolved, { method: "GET" }).then(function (res) {
+    cells.http.textContent = res.status + " " + res.statusText;
+    var ok = res.ok;
+    if (c.ping) {
+      return res.text().then(function (t) {
+        var seen = "";
+        try { seen = " · path_seen=" + JSON.parse(t).path_seen; } catch (e) { /* ignore */ }
+        cells.result.innerHTML = ok
+          ? '<span class="pass">PASS</span>' + seen
+          : '<span class="fail">FAIL</span>' + seen;
+      });
+    }
+    cells.result.innerHTML = ok ? '<span class="pass">PASS</span>' : '<span class="fail">FAIL</span>';
+  }).catch(function (e) {
+    cells.http.textContent = "—";
+    cells.result.innerHTML = '<span class="fail">FAIL</span> ' + String(e);
+  });
+});
+</script>
+</body>
+</html>

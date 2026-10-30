@@ -53,6 +53,39 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// ---- base path (reverse-proxy support) ----
+// Behind jupyter-server-proxy the app is mounted under a prefix, e.g.
+// https://host/proxy/8000/ , so root-relative URLs ("/api/...") escape the
+// mount and 404. APP_BASE is the directory this page was served from; url()
+// rewrites every request path to be relative to it. At the root the base is
+// "/" and url() is a no-op. The proxy strips the prefix before the request
+// reaches the server, so the server still sees unchanged paths.
+//
+// computeAppBase is a pure function — unit-tested in tests/test_base_path.py.
+// Keep the standalone copy in static/selfcheck.html in sync with it.
+/* BASE_PATH_FN_START */
+function computeAppBase(pathname) {
+  var p = pathname || "/";
+  var cut = p.search(/[?#]/);          // drop any query/hash
+  if (cut >= 0) p = p.slice(0, cut);
+  if (p.charAt(0) !== "/") p = "/" + p;
+  if (p.charAt(p.length - 1) === "/") return p;      // already a directory
+  var slash = p.lastIndexOf("/");
+  var last = p.slice(slash + 1);
+  if (last.indexOf(".") >= 0) return p.slice(0, slash + 1);  // a file (index.html) -> its dir
+  return p + "/";                                    // mount missing its trailing slash
+}
+/* BASE_PATH_FN_END */
+const APP_BASE = computeAppBase(window.location.pathname);
+// Resolve a request path against APP_BASE. Absolute URLs (http:, blob:, data:,
+// //host) and protocol-relative paths pass through unchanged.
+function url(path) {
+  if (path == null) return APP_BASE;
+  var p = String(path);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(p) || p.slice(0, 2) === "//") return p;
+  return APP_BASE + (p.charAt(0) === "/" ? p.slice(1) : p);
+}
+
 // The demo model's stable id (ids are never display labels; see server.py / demo.py).
 const DEMO_MODEL_ID = "demo";
 
@@ -93,7 +126,7 @@ function formatElapsed(sec) {
 }
 
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const res = await fetch(url(path), opts);
   const text = await res.text();
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
@@ -138,6 +171,9 @@ async function init() {
   $("file-input").addEventListener("change", onUpload);
   $("use-sample").addEventListener("click", useSample);
   $("use-demo").addEventListener("click", useDemoTrain);
+  // Resolve the static download links against APP_BASE (proxy-safe).
+  $("dl-sample").href = url("/api/sample");
+  $("dl-template").href = url("/api/template");
   // Drag-over styling for every dropzone (train upload, predict model, predict data).
   document.querySelectorAll(".dropzone").forEach((dz) => {
     ["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, () => dz.classList.add("is-over")));
@@ -297,7 +333,7 @@ async function useSample() {
   status.classList.remove("is-error");
   status.textContent = "Loading sample data…";
   try {
-    const res = await fetch("/api/sample");
+    const res = await fetch(url("/api/sample"));
     if (!res.ok) throw new Error((await res.text()) || res.statusText);
     const blob = await res.blob();
     await handleFile(new File([blob], "sample_survival.csv", { type: "text/csv" }));
@@ -314,7 +350,7 @@ async function useDemoTrain() {
   status.classList.remove("is-error");
   status.textContent = "Loading demo training data…";
   try {
-    const res = await fetch("/api/demo/train");
+    const res = await fetch(url("/api/demo/train"));
     if (!res.ok) throw new Error((await res.text()) || res.statusText);
     const blob = await res.blob();
     await handleFile(new File([blob], "demo_train.csv", { type: "text/csv" }));
@@ -765,9 +801,9 @@ function updateProgress(s) {
 }
 
 function showResults() {
-  $("dl-report").href = "/api/report?id=" + state.jobId;
-  $("dl-zip").href = "/api/zip?id=" + state.jobId;
-  $("report-frame").src = "/api/report?id=" + state.jobId;
+  $("dl-report").href = url("/api/report?id=" + state.jobId);
+  $("dl-zip").href = url("/api/zip?id=" + state.jobId);
+  $("report-frame").src = url("/api/report?id=" + state.jobId);
   $("step-results").classList.remove("hidden");
   initSavePanel();
   $("step-results").scrollIntoView({ behavior: "smooth" });
@@ -922,7 +958,7 @@ async function onSave() {
         $("save-result").classList.remove("hidden");
         $("save-result").innerHTML =
           `Saved <b>${escapeHtml(dlName)}</b>. ` +
-          `<a href="/api/models/download?id=${encodeURIComponent(dlName)}" download>` +
+          `<a href="${url("/api/models/download?id=" + encodeURIComponent(dlName))}" download>` +
           `Download ${escapeHtml(dlName)}.cnqmodel</a> — it now appears in the Predict tab.`;
       },
       onError: (e) => { $("save-btn").disabled = false; $("save-error").textContent = "Save failed: " + e; },
@@ -1346,7 +1382,7 @@ function candidateColumns() {
 }
 
 function templateUrl(modelId) {
-  return "/api/models/" + encodeURIComponent(modelId || "") + "/template.csv";
+  return url("/api/models/" + encodeURIComponent(modelId || "") + "/template.csv");
 }
 
 function updateTemplateAndPosition() {
@@ -1532,10 +1568,10 @@ async function showPredictResults() {
     : "";
 
   fillTable($("p-pred-table"), r.columns, r.preview_rows);
-  $("p-dl-predictions").href = "/api/predictions?id=" + state.predictJobId;
-  $("p-dl-report").href = "/api/report?id=" + state.predictJobId;
-  $("p-dl-zip").href = "/api/zip?id=" + state.predictJobId;
-  $("p-report-frame").src = "/api/report?id=" + state.predictJobId;
+  $("p-dl-predictions").href = url("/api/predictions?id=" + state.predictJobId);
+  $("p-dl-report").href = url("/api/report?id=" + state.predictJobId);
+  $("p-dl-zip").href = url("/api/zip?id=" + state.predictJobId);
+  $("p-report-frame").src = url("/api/report?id=" + state.predictJobId);
   $("p-step-results").classList.remove("hidden");
   $("p-step-results").scrollIntoView({ behavior: "smooth" });
 }
@@ -1869,10 +1905,10 @@ async function showProjResults() {
   }
   $("pr-result-summary").textContent = summary;
 
-  $("pr-dl-csv").href = "/api/projection?id=" + state.projJobId;
-  $("pr-dl-report").href = "/api/report?id=" + state.projJobId;
-  $("pr-dl-zip").href = "/api/zip?id=" + state.projJobId;
-  $("pr-report-frame").src = "/api/report?id=" + state.projJobId;
+  $("pr-dl-csv").href = url("/api/projection?id=" + state.projJobId);
+  $("pr-dl-report").href = url("/api/report?id=" + state.projJobId);
+  $("pr-dl-zip").href = url("/api/zip?id=" + state.projJobId);
+  $("pr-report-frame").src = url("/api/report?id=" + state.projJobId);
   $("pr-step-results").classList.remove("hidden");
   $("pr-step-results").scrollIntoView({ behavior: "smooth" });
 }
