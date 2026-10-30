@@ -171,6 +171,10 @@ async function init() {
   $("file-input").addEventListener("change", onUpload);
   $("use-sample").addEventListener("click", useSample);
   $("use-demo").addEventListener("click", useDemoTrain);
+  $("use-path-btn").addEventListener("click", useLocalPath);
+  $("local-path").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); useLocalPath(); }
+  });
   // Resolve the static download links against APP_BASE (proxy-safe).
   $("dl-sample").href = url("/api/sample");
   $("dl-template").href = url("/api/template");
@@ -394,29 +398,63 @@ async function handleFile(file) {
       headers: { "Content-Type": "text/csv", "X-Filename": file.name },
       body: buf,
     });
-    state.csvPath = info.csv_path;
-    state.tuneBest = null;
-    state.tuneApplied = false;
-    $("tune-applied").textContent = "";
-    state.fileName = info.file_name || file.name;
-    state.columns = info.columns;
-    state.numeric = info.numeric_columns;
-    state.binary = info.binary_columns;
-    state.guess = info.guess || null;
-    status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
-    dz.classList.add("has-file");
-    renderPreview(info.preview);
-    buildMapping();
-    revealFrom("step-map");
-    // Use the validation the server already ran with the guessed mapping, then
-    // re-validate live as the user adjusts the mapping.
-    if (info.validation) { state.lastValidation = info.validation; renderValidation(info.validation); }
-    scheduleValidate();
+    applyUploadInfo(info, status, dz);
   } catch (e) {
     dz.classList.remove("has-file");
     status.classList.add("is-error");
     status.textContent = "Upload failed: " + e.message;
   }
+}
+
+// Load a CSV already sitting on the workstation by its filesystem path —
+// the server (running on that same machine) reads it directly off disk, so
+// large real-data files never have to round-trip through the browser.
+async function useLocalPath() {
+  const status = $("upload-status");
+  const dz = document.querySelector(".dropzone");
+  const input = $("local-path");
+  const raw = input.value.trim();
+  status.classList.remove("is-error");
+  if (!state.ready) { blockedMsg(status); return; }
+  if (!raw) { status.classList.add("is-error"); status.textContent = "Enter a file path."; return; }
+  status.textContent = `Loading ${raw}…`;
+  try {
+    const info = await api("/api/upload-path", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: raw }),
+    });
+    dz.querySelector(".dz-title").textContent = info.file_name || raw;
+    dz.querySelector(".dz-hint").textContent = "Choose a different file";
+    applyUploadInfo(info, status, dz);
+  } catch (e) {
+    dz.classList.remove("has-file");
+    status.classList.add("is-error");
+    status.textContent = "Could not load that path: " + e.message;
+  }
+}
+
+// Shared tail of handleFile()/useLocalPath(): push a successful upload's
+// info blob into state and open the mapping step.
+function applyUploadInfo(info, status, dz) {
+  state.csvPath = info.csv_path;
+  state.tuneBest = null;
+  state.tuneApplied = false;
+  $("tune-applied").textContent = "";
+  state.fileName = info.file_name;
+  state.columns = info.columns;
+  state.numeric = info.numeric_columns;
+  state.binary = info.binary_columns;
+  state.guess = info.guess || null;
+  status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
+  dz.classList.add("has-file");
+  renderPreview(info.preview);
+  buildMapping();
+  revealFrom("step-map");
+  // Use the validation the server already ran with the guessed mapping, then
+  // re-validate live as the user adjusts the mapping.
+  if (info.validation) { state.lastValidation = info.validation; renderValidation(info.validation); }
+  scheduleValidate();
 }
 
 function renderPreview(preview) {

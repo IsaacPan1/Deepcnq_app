@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CNQ: Censored Non-crossing Quantile Regression</title>
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <header class="masthead">
@@ -54,6 +54,12 @@
       <span class="dz-title">Choose a CSV file</span>
       <span class="dz-hint">or drag it here</span>
     </label>
+    <div class="path-row">
+      <span class="path-row-or">or</span>
+      <input type="text" id="local-path" class="path-input"
+             placeholder="Paste a file path on this machine, e.g. /data/cohort.csv">
+      <button type="button" id="use-path-btn" class="btn btn-outline">Load from path</button>
+    </div>
     <p id="upload-status" class="status"></p>
 
     <details class="data-format">
@@ -502,6 +508,6 @@ S002,36.0,0,64,1.2,0</pre>
 
 <footer class="foot">Runs locally. Your data never leaves this computer.</footer>
 
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

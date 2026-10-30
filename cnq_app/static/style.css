@@ -331,6 +331,11 @@ input[type=checkbox], input[type=radio] { accent-color: var(--primary); width: 1
 .dropzone.has-file { border-style: solid; border-color: var(--ok); background: color-mix(in srgb, var(--ok) 6%, var(--surface)); }
 .dropzone.has-file .dz-title { color: #137a66; }
 
+.path-row { display: flex; align-items: center; gap: .6rem; margin-top: .7rem; }
+.path-row-or { font-size: .82rem; color: var(--muted); flex: none; }
+.path-row .path-input { flex: 1; margin-top: 0; }
+.path-row .btn { flex: none; white-space: nowrap; }
+
 .status { margin: .6rem 0 0; font-size: .9rem; color: var(--ink-2); min-height: 1.2em; }
 .status.is-error { color: var(--danger); }
 

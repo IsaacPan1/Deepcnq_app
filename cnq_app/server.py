@@ -351,6 +351,8 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             if route == "/api/upload":
                 return self._handle_upload()
+            if route == "/api/upload-path":
+                return self._handle_upload_path()
             if route == "/api/validate":
                 return self._handle_validate()
             if route == "/api/run":
@@ -396,6 +398,37 @@ class Handler(SimpleHTTPRequestHandler):
         data = self._read_body()
         if not data:
             return self._error("empty upload")
+        file_name = self.headers.get("X-Filename") or "upload.csv"
+        return self._ingest_csv_bytes(data, file_name)
+
+    def _handle_upload_path(self):
+        """Load a CSV already on the workstation (same machine the server runs
+        on) by its filesystem path, instead of sending its bytes over HTTP.
+        Reusable for large real-data files that the 64 MB /api/upload body
+        cap isn't meant for."""
+        if not self._repo_ready():
+            return
+        body = json.loads(self._read_body() or b"{}")
+        raw_path = (body.get("path") or "").strip().strip('"')
+        if not raw_path:
+            return self._error("enter a file path")
+        src = Path(raw_path).expanduser()
+        if not src.exists():
+            return self._error(f"no such file: {src}")
+        if not src.is_file():
+            return self._error(f"not a file: {src}")
+        try:
+            data = src.read_bytes()
+        except OSError as exc:
+            return self._error(f"could not read {src}: {exc}")
+        if not data:
+            return self._error(f"{src} is empty")
+        return self._ingest_csv_bytes(data, src.name)
+
+    def _ingest_csv_bytes(self, data: bytes, file_name: str):
+        """Write CSV bytes into uploads/, preview + guess-map + validate it,
+        and send back the info blob the frontend uses to open step 2.
+        Shared by the browser-upload and local-path routes."""
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         upload_id = uuid.uuid4().hex[:12]
         path = UPLOAD_DIR / f"{upload_id}.csv"
@@ -407,7 +440,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._error(f"could not parse CSV: {exc}")
         info["csv_path"] = str(path)
         info["upload_id"] = upload_id
-        info["file_name"] = self.headers.get("X-Filename") or f"{upload_id}.csv"
+        info["file_name"] = file_name
         # Guess a mapping and validate it immediately so the UI opens pre-filled.
         guess = guess_mapping(info["columns"], info["numeric_columns"], info["binary_columns"])
         info["guess"] = guess
