@@ -401,6 +401,23 @@ class Handler(SimpleHTTPRequestHandler):
         file_name = self.headers.get("X-Filename") or "upload.csv"
         return self._ingest_csv_bytes(data, file_name)
 
+    def _resolve_data_path(self, raw_path: str) -> Path | None:
+        """Resolve a path typed into the local-path field. Absolute paths and
+        ~-paths are used as given. A relative path is tried first against the
+        server's own working directory, then against the home directory —
+        that second lookup is what lets a path copied from JupyterLab's
+        "Copy Path" (relative to the notebook server's root, typically the
+        home dir on Workbench) work without the user having to prepend
+        /home/jupyter/ themselves. Returns the first existing match, or None."""
+        p = Path(raw_path).expanduser()
+        if p.is_absolute():
+            return p if p.exists() else None
+        candidates = [Path.cwd() / p, Path.home() / p]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
     def _handle_upload_path(self):
         """Load a CSV already on the workstation (same machine the server runs
         on) by its filesystem path, instead of sending its bytes over HTTP.
@@ -412,9 +429,9 @@ class Handler(SimpleHTTPRequestHandler):
         raw_path = (body.get("path") or "").strip().strip('"')
         if not raw_path:
             return self._error("enter a file path")
-        src = Path(raw_path).expanduser()
-        if not src.exists():
-            return self._error(f"no such file: {src}")
+        src = self._resolve_data_path(raw_path)
+        if src is None:
+            return self._error(f"no such file: {raw_path}")
         if not src.is_file():
             return self._error(f"not a file: {src}")
         try:
