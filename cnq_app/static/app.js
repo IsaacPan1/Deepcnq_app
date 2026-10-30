@@ -1016,6 +1016,10 @@ function initPredict() {
   $("p-model-select").addEventListener("change", onPredictModelSelect);
   $("p-model-file").addEventListener("change", onPredictModelUpload);
   $("p-file-input").addEventListener("change", onPredictDataUpload);
+  $("p-use-path-btn").addEventListener("click", usePredictLocalPath);
+  $("p-local-path").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); usePredictLocalPath(); }
+  });
   ["p-id-col", "p-time-col", "p-event-col"].forEach((id) =>
     $(id).addEventListener("change", onPredictColChange));
   $("p-match-position").addEventListener("click", onMatchByPosition);
@@ -1262,7 +1266,6 @@ async function onPredictDataUpload(ev) {
   const file = ev.target.files[0];
   if (!file) return;
   const status = $("p-upload-status");
-  const dz = $("p-file-input").closest(".dropzone");
   status.classList.remove("is-error");
   if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
   status.textContent = `Uploading ${file.name}…`;
@@ -1273,23 +1276,53 @@ async function onPredictDataUpload(ev) {
       headers: { "Content-Type": "text/csv", "X-Filename": file.name },
       body: buf,
     });
-    state.predictCsvPath = info.csv_path;
-    state.predictColumns = info.columns;
-    status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
-    dz.querySelector(".dz-title").textContent = file.name;
-    dz.querySelector(".dz-hint").textContent = "Choose a different file";
-    dz.classList.add("has-file");
-    fillTable($("p-preview-table"), info.preview.columns, info.preview.rows);
-    $("p-preview-wrap").classList.remove("hidden");
-    fillMappingColumns();
-    buildPredictMapping();
-    $("p-step-map").classList.remove("hidden");
-    $("p-step-run").classList.remove("hidden");
-    schedulePredictValidate();
+    applyPredictUploadInfo(info, status);
   } catch (e) {
     status.classList.add("is-error");
     status.textContent = "Upload failed: " + e.message;
   }
+}
+
+// Predict-tab counterpart to useLocalPath(): load the subjects CSV directly
+// off the server's own disk by path.
+async function usePredictLocalPath() {
+  const status = $("p-upload-status");
+  const input = $("p-local-path");
+  const raw = input.value.trim();
+  status.classList.remove("is-error");
+  if (!state.ready) { status.classList.add("is-error"); status.textContent = state.healthMsg; return; }
+  if (!raw) { status.classList.add("is-error"); status.textContent = "Enter a file path."; return; }
+  status.textContent = `Loading ${raw}…`;
+  try {
+    const info = await api("/api/predict/upload-path", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: raw }),
+    });
+    applyPredictUploadInfo(info, status);
+  } catch (e) {
+    status.classList.add("is-error");
+    status.textContent = "Could not load that path: " + e.message;
+  }
+}
+
+// Shared tail of onPredictDataUpload()/usePredictLocalPath()/the demo-subject
+// loaders: push a successful subjects-file load into state and open mapping.
+function applyPredictUploadInfo(info, status) {
+  const dz = $("p-file-input").closest(".dropzone");
+  state.predictCsvPath = info.csv_path;
+  state.predictColumns = info.columns;
+  status.textContent = `Loaded ${info.n_rows.toLocaleString()} rows and ${info.columns.length} columns.`;
+  dz.querySelector(".dz-title").textContent = info.file_name || "Choose a CSV file";
+  dz.querySelector(".dz-hint").textContent = "Choose a different file";
+  dz.classList.add("has-file");
+  fillTable($("p-preview-table"), info.preview.columns, info.preview.rows);
+  $("p-preview-wrap").classList.remove("hidden");
+  fillMappingColumns();
+  buildPredictMapping();
+  $("p-step-map").classList.remove("hidden");
+  $("p-step-run").classList.remove("hidden");
+  schedulePredictValidate();
 }
 
 function jsNorm(s) { return String(s).toLowerCase().replace(/[\s_-]+/g, ""); }

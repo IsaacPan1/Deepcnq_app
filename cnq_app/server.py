@@ -365,6 +365,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._handle_upload_model()
             if route == "/api/predict/upload-data":
                 return self._handle_predict_upload_data()
+            if route == "/api/predict/upload-path":
+                return self._handle_predict_upload_path()
             if route == "/api/predict/validate":
                 return self._handle_predict_validate()
             if route == "/api/predict/run":
@@ -767,6 +769,36 @@ class Handler(SimpleHTTPRequestHandler):
         data = self._read_body()
         if not data:
             return self._error("empty upload")
+        file_name = self.headers.get("X-Filename")
+        return self._ingest_predict_csv_bytes(data, file_name)
+
+    def _handle_predict_upload_path(self):
+        """Predict-tab counterpart to _handle_upload_path: load the subjects
+        CSV directly off the server's own disk by path, instead of sending
+        its bytes over HTTP. Same path resolution (absolute / ~ / relative
+        to cwd / relative to home) as the training-data path field."""
+        if not self._repo_ready():
+            return
+        body = json.loads(self._read_body() or b"{}")
+        raw_path = (body.get("path") or "").strip().strip('"')
+        if not raw_path:
+            return self._error("enter a file path")
+        src = self._resolve_data_path(raw_path)
+        if src is None:
+            return self._error(f"no such file: {raw_path}")
+        if not src.is_file():
+            return self._error(f"not a file: {src}")
+        try:
+            data = src.read_bytes()
+        except OSError as exc:
+            return self._error(f"could not read {src}: {exc}")
+        if not data:
+            return self._error(f"{src} is empty")
+        return self._ingest_predict_csv_bytes(data, src.name)
+
+    def _ingest_predict_csv_bytes(self, data: bytes, file_name: str | None):
+        """Write subject-data CSV bytes into uploads/ and preview it. Shared
+        by the browser-upload and local-path routes for the Predict tab."""
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         path = UPLOAD_DIR / f"predict_{uuid.uuid4().hex[:12]}.csv"
         path.write_bytes(data)
@@ -776,7 +808,7 @@ class Handler(SimpleHTTPRequestHandler):
             path.unlink(missing_ok=True)
             return self._error(f"could not parse CSV: {exc}")
         info["csv_path"] = str(path)
-        info["file_name"] = self.headers.get("X-Filename") or path.name
+        info["file_name"] = file_name or path.name
         self._send_json(info)
 
     def _handle_predict_validate(self):
