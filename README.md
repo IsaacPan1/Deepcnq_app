@@ -9,7 +9,7 @@ First-time setup takes about 10 minutes.
 
 ## Run on Google Cloud (Vertex AI Workbench)
 
-1. **Google Cloud Console → Vertex AI → Workbench.** Select your instance (start it if it's stopped), then click **Open JupyterLab**.
+1. **Open Workbench in Google Cloud.** In the Google Cloud console, click **Agent Platform** in the left sidebar, then **Notebooks → Workbench**. Select your instance (start it if it's stopped), then click **Open JupyterLab**.
 2. **First time only** — open a terminal in JupyterLab (**File → New → Terminal**) and download the app:
    ```
    git clone --recursive https://github.com/IsaacPan1/Deepcnq_app

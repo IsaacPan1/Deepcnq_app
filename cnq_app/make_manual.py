@@ -276,8 +276,9 @@ def build(path: Path) -> Path:
 
     h2("1 1 Google Cloud (Vertex AI Workbench)")
     steps([
-        "Google Cloud Console, Vertex AI, Workbench. Select your instance, start it "
-        "if it is stopped, and click Open JupyterLab.",
+        "In the Google Cloud console, click Agent Platform in the left sidebar, then "
+        "Notebooks, then Workbench. Select your instance, start it if it is stopped, "
+        "and click Open JupyterLab.",
         "First time only: open a terminal in JupyterLab (File, New, Terminal) and "
         "download the app with the first command below.",
         "Start CNQ with the second command below. The first run takes a few minutes; "
