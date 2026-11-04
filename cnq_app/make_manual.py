@@ -253,12 +253,13 @@ def build(path: Path) -> Path:
     title = doc.add_paragraph(style="Title")
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.add_run("CNQ User Manual")
-    subtitle = para("Quick guide for local censored quantile modeling",
+    subtitle = para("Quick guide for censored quantile modeling",
                     align=WD_ALIGN_PARAGRAPH.CENTER)
     subtitle.runs[0].font.size = Pt(15)
     subtitle.runs[0].font.bold = True
     para("Start the app, train and save a model, then predict new subjects or project "
-         "population trends. CNQ runs on your computer and uses a browser as its interface.",
+         "population trends. CNQ runs on your Google Cloud virtual machine or your own "
+         "computer and uses a browser as its interface.",
          align=WD_ALIGN_PARAGRAPH.CENTER)
     para("After CNQ starts, routine use does not require Python programming.",
          align=WD_ALIGN_PARAGRAPH.CENTER)
@@ -269,16 +270,80 @@ def build(path: Path) -> Path:
 
     # 1 Start CNQ
     h1("1 Start CNQ")
-    para("The same startup procedure applies on Windows, macOS, and Linux. The first "
-         "run installs the required packages and can take several minutes.")
+    para("CNQ runs on a Google Cloud Vertex AI Workbench virtual machine (recommended) "
+         "or on your own computer. The first run installs the required packages and can "
+         "take several minutes.")
+
+    h2("1 1 Google Cloud (Vertex AI Workbench)")
+    steps([
+        "Google Cloud Console, Vertex AI, Workbench. Select your instance, start it "
+        "if it is stopped, and click Open JupyterLab.",
+        "First time only: open a terminal in JupyterLab (File, New, Terminal) and "
+        "download the app with the first command below.",
+        "Start CNQ with the second command below. The first run takes a few minutes; "
+        "wait for the terminal to print Serving CNQ app on 127.0.0.1 port 8000.",
+        "Open the app at your JupyterLab address with /lab replaced by /proxy/8000/, "
+        "keeping the trailing slash. For example: "
+        "https://abc123-dot-us-central1.notebooks.googleusercontent.com/proxy/8000/",
+    ])
+    code("git clone --recursive https://github.com/IsaacPan1/Deepcnq_app")
+    code("cd ~/Deepcnq_app/cnq_app\n"
+         "python run.py 8000")
+    labeled_para("Any port number works. ",
+                 "If 8000 is in use, CNQ prints a one-line message. Start it on another "
+                 "number, for example python run.py 8001, and use that same number in the "
+                 "link (/proxy/8001/).")
+    labeled_para("Loading your data. ",
+                 "There are two ways, both on the Train and Predict tabs. Upload from your "
+                 "own computer by dragging a file onto the upload box or clicking it; this "
+                 "goes through the browser and is capped at 64 MB. Or use a file already on "
+                 "the VM, which suits real or large data: upload the CSV into JupyterLab's "
+                 "file browser (the upload icon, or drag it in), right-click the file, choose "
+                 "Copy Path, and paste that path into the \"or paste a file path\" field next "
+                 "to CNQ's upload box. CNQ reads it straight from the VM's disk, so there is "
+                 "no 64 MB limit, and data already on the VM never needs downloading to your "
+                 "computer. See 2 1 Loading your data.")
+    labeled_para("To stop CNQ. ", "Return to the terminal and press Ctrl+C.")
+    labeled_para("To open it again later. ",
+                 "Start the instance if it was stopped, open JupyterLab, and run the "
+                 "second command again. To update first, stop CNQ, run cd ~/Deepcnq_app, "
+                 "then git pull --recurse-submodules, and start CNQ again.")
+
+    h2("1 2 Privacy on Workbench")
+    bullets([
+        "The app runs only on your own virtual machine, and only while it is started. "
+        "The link does not work on any other machine, and it stops working when you "
+        "stop the server or the instance.",
+        "The link is not public. Opening it requires signing in to Google with an "
+        "account that has access to your instance, which by default is only you. If "
+        "you give colleagues access to the instance they can open it too and would "
+        "share the same files, so give each person their own instance.",
+        "Your data stays on the VM. Uploaded files are read from the VM's disk and "
+        "copied to cnq_app/jobs/uploads on that VM. Nothing is sent anywhere else.",
+        "Other people can use port 8000 at the same time on their own VMs. There is "
+        "no clash and nothing is shared with you.",
+    ])
+
+    h2("1 3 What is saved")
+    bullets([
+        "Saved models (cnq_app/models) are still listed on the Predict tab whenever you "
+        "reopen the app. They survive stopping the server, restarting the instance, and "
+        "git pull. They are removed only if you delete them in the app or delete the "
+        "Deepcnq_app folder or the instance.",
+        "Reports, plots, and predictions from your 20 most recent runs stay on disk in "
+        "cnq_app/jobs, but the app does not list past runs after a restart. Download the "
+        "predictions CSV, report, or zip when a run finishes.",
+    ])
+
+    h2("1 4 Your own computer: obtain the app")
+    para("Prefer your own laptop? It is the same app, and your data stays on your "
+         "computer. The startup procedure is the same on Windows, macOS, and Linux.")
     figure(
         STARTUP_INFOGRAPHIC,
         "Three step CNQ startup process: obtain CNQ, run python run.py, and open the local browser address.",
-        "Figure 1. Start CNQ in three steps.",
+        "Figure 1. Start CNQ on your own computer in three steps.",
         6.00,
     )
-
-    h2("1 1 Obtain the app")
     bullets([
         "Approved zip: extract the full deepquant package to a local folder that is not synchronized by OneDrive, iCloud, or Dropbox.",
         "GitHub: clone recursively so the deepcnq submodule is included.",
@@ -287,7 +352,7 @@ def build(path: Path) -> Path:
     para("Do not use GitHub Download ZIP for the source repository because it may omit "
          "the deepcnq submodule.")
 
-    h2("1 2 Go to the app folder and run CNQ")
+    h2("1 5 Your own computer: go to the app folder and run CNQ")
     para("Open Terminal on macOS or Linux, or PowerShell or Command Prompt on Windows.")
     labeled_para("Easiest method. ",
                  "Type cd followed by one space. Drag the Deepcnq_app folder from File "
@@ -302,26 +367,6 @@ def build(path: Path) -> Path:
     para("The first time you run CNQ, allow 5-10 minutes for packages to download and "
          "wait until the terminal prompts you to open http://127.0.0.1:8000/.")
     labeled_para("To stop CNQ. ", "Return to the terminal and press Ctrl+C.")
-
-    h2("1 3 Google Cloud (Vertex AI Workbench)")
-    para("CNQ runs the same way on a Vertex AI Workbench instance. The browser and "
-         "the app are just on different machines, connected through Google's "
-         "notebook proxy, so starting it takes one extra step.")
-    steps([
-        "Google Cloud Console, Vertex AI, Workbench. Select the instance, start it "
-        "if it is stopped, and click Open JupyterLab.",
-        "First time only: open a terminal in JupyterLab (File, New, Terminal) and "
-        "clone the app with the same command as step 1 1.",
-        "From that terminal: cd Deepcnq_app/cnq_app, then python run.py 8000.",
-        "Open the app at the same JupyterLab address with /lab replaced by "
-        "/proxy/8000/, keeping the trailing slash.",
-    ])
-    para("From here CNQ works exactly as described below, with one difference: the "
-         "upload box cannot reach files on your laptop, because the browser and the "
-         "app are not on the same machine. Upload the CSV into JupyterLab's own file "
-         "browser first (the upload icon, or drag it in), right-click the file and "
-         "choose Copy Path, then paste that path into CNQ's \"or paste a file path\" "
-         "field next to the upload box and press Enter. See 2 1 Loading your data.")
 
     # 2 Prepare data
     h1("2 Prepare your data")
@@ -345,12 +390,13 @@ def build(path: Path) -> Path:
         "upload box and press Enter. CNQ reads the file directly from disk on the "
         "machine it is running on.",
     ])
-    para("The path field is the only option on Google Cloud Workbench, since the "
-         "upload box there cannot reach your laptop's files (see 1 3). It is also "
-         "useful for a large local file, since it has no upload size limit.")
+    para("The path field is an alternative to uploading from your computer. It is "
+         "preferred on Google Cloud Workbench for large files or for data that already "
+         "lives on the VM (see 1 1), since CNQ reads the file directly from disk and the "
+         "64 MB browser-upload limit does not apply.")
 
     h2("2 2 Local storage and privacy")
-    para("CNQ runs locally, but uploaded files are not temporary. Training, prediction, "
+    para("CNQ keeps files on the machine where it runs, and uploaded files are not temporary. Training, prediction, "
          "and cohort CSV files are copied to cnq_app/jobs/uploads. Recent run folders "
          "under cnq_app/jobs also contain reports, plots, predictions, model artifacts, "
          "and result zip files. A training result zip includes a copy of the uploaded "
@@ -456,8 +502,10 @@ def build(path: Path) -> Path:
         ["Port 8000 is in use", "Run python run.py 8001 and open http://127.0.0.1:8001/."],
         ["Page is unformatted", "Use the exact local address and hard refresh with Ctrl+Shift+R or Cmd+Shift+R."],
         ["Projection is unavailable", "Save or rebuild the model with the current CNQ version so it includes the training curve."],
-        ["Workbench: blank page or 404/Init failed error", "Use the address ending in /proxy/8000/ with the trailing slash, not /lab, then hard refresh with Ctrl+Shift+R."],
-        ["Workbench: Could not load that path", "The path must point to a file already uploaded into JupyterLab on the Workbench instance, not a path on your laptop. See 1 3."],
+        ["Workbench: blank page or 404/Init failed error", "Use the address ending in /proxy/8000/ (or your port number) with the trailing slash, not /lab, then hard refresh with Ctrl+Shift+R."],
+        ["Workbench: port already in use", "Start CNQ on another number, for example python run.py 8001, and use that same number in the link (/proxy/8001/)."],
+        ["Workbench: Could not load that path", "The path must point to a file already uploaded into JupyterLab on the Workbench instance, not a path on your laptop. See 1 1."],
+        ["Workbench: the link stopped working", "The server is not running because the terminal was closed or the instance was stopped. Start the instance if needed and run python run.py 8000 again."],
     ], widths=[2.15, 4.25])
 
     # 9 Update

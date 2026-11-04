@@ -1,3 +1,6 @@
+> **Using Google Cloud (Vertex AI Workbench)?** Follow *Run on Google Cloud* at the top of the
+> [top-level README](../README.md). The steps below are for running on your own computer.
+
 ## Start the app
 
 1. Unzip `deepquant.zip` anywhere you like.
@@ -76,11 +79,11 @@ dataset).
 **Loading it in:** drag the file into the upload box, or — on both the **Train**
 and **Predict** tabs — paste a file path into the **"or paste a file path"**
 field next to it and press Enter. The app reads that file directly off the
-same machine it's running on. This is the way to go for a large file, or when
-running on a cloud notebook such as **Google Vertex AI Workbench**, where the
-browser and the app aren't on the same machine — see *Running on Google Cloud*
-in the [top-level README](../README.md) for the Workbench-specific steps
-(upload into JupyterLab, then copy its path in).
+same machine it's running on. The path field is an alternative to dragging a
+file in: it is preferred for a large file, and on a cloud notebook such as
+**Google Vertex AI Workbench** when the data already lives on the VM — see
+*Run on Google Cloud (Vertex AI Workbench)* in the [top-level README](../README.md)
+for the Workbench-specific steps (upload into JupyterLab, then copy its path in).
 
 | Column | What it is | Example |
 |--------|-----------|---------|
